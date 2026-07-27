@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/anacrolix/torrent/bencode"
@@ -18,7 +19,7 @@ import (
 	"github.com/autobrr/upbrr/pkg/api"
 )
 
-func TestResolveUploadTorrentPathWritesCleanBaseCopy(t *testing.T) {
+func TestResolveUploadTorrentBasePathWritesCleanBaseCopy(t *testing.T) {
 	t.Parallel()
 
 	tmp := t.TempDir()
@@ -39,7 +40,7 @@ func TestResolveUploadTorrentPathWritesCleanBaseCopy(t *testing.T) {
 		InfoBytes:    testInfoBytes(t, "BHD"),
 	})
 
-	got, err := ResolveUploadTorrentPath(api.PreparedMetadata{
+	got, err := resolveUploadTorrentBasePath(api.UploadSubject{
 		SourcePath:  sourcePath,
 		TorrentPath: dirtyTorrentPath,
 	}, filepath.Join(tmp, "state", "upbrr.db"))
@@ -86,7 +87,7 @@ func TestResolveUploadTorrentPathWritesCleanBaseCopy(t *testing.T) {
 	assertInfoSource(t, original, "BHD")
 }
 
-func TestResolveUploadTorrentPathSamePathRewriteFailurePreservesGuessedTorrent(t *testing.T) {
+func TestResolveUploadTorrentBasePathSamePathRewriteFailurePreservesGuessedTorrent(t *testing.T) {
 	t.Parallel()
 
 	tmp := t.TempDir()
@@ -95,7 +96,7 @@ func TestResolveUploadTorrentPathSamePathRewriteFailurePreservesGuessedTorrent(t
 		t.Fatalf("write source: %v", err)
 	}
 	dbPath := filepath.Join(tmp, "state", "upbrr.db")
-	meta := api.PreparedMetadata{SourcePath: sourcePath}
+	meta := api.UploadSubject{SourcePath: sourcePath}
 	guessed, ok := uploadTorrentCleanPath(meta, dbPath)
 	if !ok {
 		t.Fatal("expected clean upload torrent path")
@@ -110,7 +111,7 @@ func TestResolveUploadTorrentPathSamePathRewriteFailurePreservesGuessedTorrent(t
 		t.Fatalf("read guessed torrent: %v", err)
 	}
 
-	got, err := ResolveUploadTorrentPath(meta, dbPath)
+	got, err := resolveUploadTorrentBasePath(meta, dbPath)
 	if err == nil {
 		t.Fatalf("expected rewrite error, got path %q", got)
 	}
@@ -126,7 +127,7 @@ func TestResolveUploadTorrentPathSamePathRewriteFailurePreservesGuessedTorrent(t
 	}
 }
 
-func TestResolveUploadTorrentPathFallsBackToExplicitCandidateWhenCleanCopyInvalid(t *testing.T) {
+func TestResolveUploadTorrentBasePathFallsBackToExplicitCandidateWhenCleanCopyInvalid(t *testing.T) {
 	t.Parallel()
 
 	tmp := t.TempDir()
@@ -139,7 +140,7 @@ func TestResolveUploadTorrentPathFallsBackToExplicitCandidateWhenCleanCopyInvali
 		t.Fatalf("write invalid torrent: %v", err)
 	}
 
-	got, err := ResolveUploadTorrentPath(api.PreparedMetadata{
+	got, err := resolveUploadTorrentBasePath(api.UploadSubject{
 		SourcePath:  sourcePath,
 		TorrentPath: invalidTorrentPath,
 	}, filepath.Join(tmp, "state", "upbrr.db"))
@@ -207,7 +208,7 @@ func TestWriteUploadTorrentPreservesPieceLayers(t *testing.T) {
 	assertInfoSource(t, original, "BHD")
 }
 
-func TestResolveUploadTorrentPathWithoutCleanTargetLeavesOriginalUnchanged(t *testing.T) {
+func TestResolveUploadTorrentBasePathWithoutCleanTargetLeavesOriginalUnchanged(t *testing.T) {
 	t.Parallel()
 
 	tmp := t.TempDir()
@@ -218,7 +219,7 @@ func TestResolveUploadTorrentPathWithoutCleanTargetLeavesOriginalUnchanged(t *te
 		InfoBytes: testInfoBytes(t, ""),
 	})
 
-	got, err := ResolveUploadTorrentPath(api.PreparedMetadata{TorrentPath: torrentPath}, "")
+	got, err := resolveUploadTorrentBasePath(api.UploadSubject{TorrentPath: torrentPath}, "")
 	if err != nil {
 		t.Fatalf("resolve upload torrent: %v", err)
 	}
@@ -293,10 +294,10 @@ func TestPrepareTrackerUploadTorrentCreatesSpecificArtifact(t *testing.T) {
 	})
 
 	dbPath := filepath.Join(tmp, "state", "upbrr.db")
-	meta, err := PrepareTrackerUploadTorrent(api.PreparedMetadata{
+	meta, err := prepareTrackerUploadTorrentWithRegistry(api.UploadSubject{
 		SourcePath:  sourcePath,
 		TorrentPath: baseTorrentPath,
-	}, dbPath, "HDB", config.TrackerConfig{AnnounceURL: "https://new.example/announce"})
+	}, dbPath, "HDB", config.TrackerConfig{AnnounceURL: "https://new.example/announce"}, hdbArtifactRegistry(t))
 	if err != nil {
 		t.Fatalf("prepare tracker torrent: %v", err)
 	}
@@ -310,7 +311,7 @@ func TestPrepareTrackerUploadTorrentCreatesSpecificArtifact(t *testing.T) {
 	}
 	assertInfoSource(t, artifact, "HDBits")
 
-	cleanBase, ok := uploadTorrentCleanPath(api.PreparedMetadata{SourcePath: sourcePath, TorrentPath: baseTorrentPath}, dbPath)
+	cleanBase, ok := uploadTorrentCleanPath(api.UploadSubject{SourcePath: sourcePath, TorrentPath: baseTorrentPath}, dbPath)
 	if !ok {
 		t.Fatal("expected clean base path")
 	}
@@ -332,10 +333,18 @@ func TestPrepareTrackerUploadTorrentUsesDefaultAnnounce(t *testing.T) {
 	baseTorrentPath := filepath.Join(tmp, "base.torrent")
 	writeTestMetaInfo(t, baseTorrentPath, metainfo.MetaInfo{InfoBytes: testInfoBytes(t, "")})
 
-	meta, err := PrepareTrackerUploadTorrent(api.PreparedMetadata{
+	registry := NewRegistry()
+	if err := registry.RegisterDescriptor(Descriptor{
+		Name:           "AZ",
+		Definition:     stubDefinition{name: "AZ"},
+		UploadArtifact: &UploadArtifactPolicy{Source: "AvistaZ", DefaultAnnounce: "https://tracker.avistaz.to/announce"},
+	}); err != nil {
+		t.Fatalf("register AZ artifact policy: %v", err)
+	}
+	meta, err := prepareTrackerUploadTorrentWithRegistry(api.UploadSubject{
 		SourcePath:  sourcePath,
 		TorrentPath: baseTorrentPath,
-	}, filepath.Join(tmp, "state", "upbrr.db"), "AZ", config.TrackerConfig{})
+	}, filepath.Join(tmp, "state", "upbrr.db"), "AZ", config.TrackerConfig{}, registry)
 	if err != nil {
 		t.Fatalf("prepare tracker torrent: %v", err)
 	}
@@ -357,10 +366,10 @@ func TestPrepareTrackerUploadTorrentUsesBTNAnnounceURL(t *testing.T) {
 	baseTorrentPath := filepath.Join(tmp, "base.torrent")
 	writeTestMetaInfo(t, baseTorrentPath, metainfo.MetaInfo{InfoBytes: testInfoBytes(t, "")})
 
-	meta, err := PrepareTrackerUploadTorrent(api.PreparedMetadata{
+	meta, err := prepareTrackerUploadTorrentWithRegistry(api.UploadSubject{
 		SourcePath:  sourcePath,
 		TorrentPath: baseTorrentPath,
-	}, filepath.Join(tmp, "state", "upbrr.db"), "BTN", config.TrackerConfig{AnnounceURL: "https://tracker.btn.example/announce/passkey"})
+	}, filepath.Join(tmp, "state", "upbrr.db"), "BTN", config.TrackerConfig{AnnounceURL: "https://tracker.btn.example/announce/passkey"}, btnArtifactRegistry(t))
 	if err != nil {
 		t.Fatalf("prepare tracker torrent: %v", err)
 	}
@@ -374,7 +383,7 @@ func TestPrepareTrackerUploadTorrentUsesBTNAnnounceURL(t *testing.T) {
 	assertInfoSource(t, artifact, "BTN")
 }
 
-func TestPrepareTrackerUploadTorrentSkipsBTNWithoutAnnounceURL(t *testing.T) {
+func TestPrepareTrackerUploadTorrentFailsBTNWithoutRequiredAnnounceURL(t *testing.T) {
 	t.Parallel()
 
 	tmp := t.TempDir()
@@ -386,16 +395,16 @@ func TestPrepareTrackerUploadTorrentSkipsBTNWithoutAnnounceURL(t *testing.T) {
 	writeTestMetaInfo(t, baseTorrentPath, metainfo.MetaInfo{InfoBytes: testInfoBytes(t, "")})
 
 	dbPath := filepath.Join(tmp, "state", "upbrr.db")
-	meta := api.PreparedMetadata{
+	meta := api.UploadSubject{
 		SourcePath:  sourcePath,
 		TorrentPath: baseTorrentPath,
 	}
-	got, err := PrepareTrackerUploadTorrent(meta, dbPath, "BTN", config.TrackerConfig{})
-	if err != nil {
-		t.Fatalf("prepare tracker torrent: %v", err)
+	got, err := prepareTrackerUploadTorrentWithRegistry(meta, dbPath, "BTN", config.TrackerConfig{}, btnArtifactRegistry(t))
+	if err == nil || !strings.Contains(err.Error(), "required announce URL is missing") {
+		t.Fatalf("prepare tracker torrent error = %v", err)
 	}
-	if got.TorrentPath != baseTorrentPath {
-		t.Fatalf("expected BTN torrent path unchanged without announce URL, got %q", got.TorrentPath)
+	if got.TorrentPath != "" {
+		t.Fatalf("expected no prepared subject, got %q", got.TorrentPath)
 	}
 	artifactPath, err := ResolveTrackerTorrentArtifactPath(meta, dbPath, "BTN")
 	if err != nil {
@@ -406,46 +415,75 @@ func TestPrepareTrackerUploadTorrentSkipsBTNWithoutAnnounceURL(t *testing.T) {
 	}
 }
 
-func TestPrepareTrackerUploadTorrentNoSpecLeavesMetaUnchanged(t *testing.T) {
-	t.Parallel()
-
-	meta := api.PreparedMetadata{TorrentPath: filepath.Join(t.TempDir(), "base.torrent")}
-	got, err := PrepareTrackerUploadTorrent(meta, "", "BTN", config.TrackerConfig{})
-	if err != nil {
-		t.Fatalf("prepare tracker torrent: %v", err)
-	}
-	if got.TorrentPath != meta.TorrentPath {
-		t.Fatalf("expected torrent path unchanged, got %q", got.TorrentPath)
-	}
-}
-
-func TestPrepareDryRunInjectionTorrentCreatesGenericTrackerArtifact(t *testing.T) {
+func TestPrepareTrackerUploadTorrentWithoutPolicyStillCreatesSpecificArtifact(t *testing.T) {
 	t.Parallel()
 
 	tmp := t.TempDir()
-	sourcePath := filepath.Join(tmp, "Release.mkv")
+	sourcePath := filepath.Join(tmp, "Example.Release.2026.mkv")
 	if err := os.WriteFile(sourcePath, []byte("data"), 0o600); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
 	baseTorrentPath := filepath.Join(tmp, "base.torrent")
 	writeTestMetaInfo(t, baseTorrentPath, metainfo.MetaInfo{InfoBytes: testInfoBytes(t, "")})
-
-	meta, err := PrepareDryRunInjectionTorrent(api.PreparedMetadata{
+	got, err := prepareTrackerUploadTorrentWithRegistry(api.UploadSubject{
 		SourcePath:  sourcePath,
 		TorrentPath: baseTorrentPath,
-	}, filepath.Join(tmp, "state", "upbrr.db"), "LUME", config.TrackerConfig{AnnounceURL: "https://luminarr.me/announce/passkey"})
+	}, filepath.Join(tmp, "state", "upbrr.db"), "EXAMPLE", config.TrackerConfig{}, nil)
 	if err != nil {
-		t.Fatalf("prepare dry-run injection torrent: %v", err)
+		t.Fatalf("prepare tracker torrent: %v", err)
 	}
-	if meta.TorrentPath == "" || meta.TorrentPath == baseTorrentPath {
-		t.Fatalf("expected dry-run tracker artifact path, got %q", meta.TorrentPath)
+	if got.TorrentPath == "" || got.TorrentPath == baseTorrentPath {
+		t.Fatalf("expected tracker-specific copy, got %q", got.TorrentPath)
 	}
+	assertInfoSource(t, readTestMetaInfo(t, got.TorrentPath), "EXAMPLE")
+}
 
-	artifact := readTestMetaInfo(t, meta.TorrentPath)
-	if artifact.Announce != "https://luminarr.me/announce/passkey" {
-		t.Fatal("expected announce set")
+func TestPreparedUploadTorrentPathNeverFallsBack(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	clientPath := filepath.Join(tmp, "client.torrent")
+	writeTestMetaInfo(t, clientPath, metainfo.MetaInfo{InfoBytes: testInfoBytes(t, "")})
+	if _, err := PreparedUploadTorrentPath(api.UploadSubject{ClientTorrentPath: clientPath}); err == nil {
+		t.Fatal("expected missing prepared tracker torrent error")
 	}
-	assertInfoSource(t, artifact, "LUME")
+	preparedPath := filepath.Join(tmp, "[example].release.torrent")
+	writeTestMetaInfo(t, preparedPath, metainfo.MetaInfo{InfoBytes: testInfoBytes(t, "EXAMPLE")})
+	got, err := PreparedUploadTorrentPath(api.UploadSubject{TorrentPath: preparedPath, ClientTorrentPath: clientPath})
+	if err != nil {
+		t.Fatalf("prepared tracker torrent: %v", err)
+	}
+	if got != preparedPath {
+		t.Fatalf("prepared tracker torrent path = %q", got)
+	}
+}
+
+func btnArtifactRegistry(t *testing.T) *Registry {
+	t.Helper()
+	registry := NewRegistry()
+	policy := &UploadArtifactPolicy{Source: "BTN", RequireAnnounce: true}
+	if err := registry.RegisterDescriptor(Descriptor{
+		Name:           "BTN",
+		Definition:     stubDefinition{name: "BTN"},
+		UploadArtifact: policy,
+	}); err != nil {
+		t.Fatalf("register BTN artifact policy: %v", err)
+	}
+	return registry
+}
+
+func hdbArtifactRegistry(t *testing.T) *Registry {
+	t.Helper()
+	registry := NewRegistry()
+	policy := &UploadArtifactPolicy{Source: "HDBits"}
+	if err := registry.RegisterDescriptor(Descriptor{
+		Name:           "HDB",
+		Definition:     stubDefinition{name: "HDB"},
+		UploadArtifact: policy,
+	}); err != nil {
+		t.Fatalf("register HDB artifact policy: %v", err)
+	}
+	return registry
 }
 
 func TestResolveTrackerTorrentArtifactPathPrefixesTrackerName(t *testing.T) {
@@ -453,7 +491,7 @@ func TestResolveTrackerTorrentArtifactPathPrefixesTrackerName(t *testing.T) {
 
 	tmp := t.TempDir()
 	sourcePath := filepath.Join(tmp, "Example.Movie.2026.BluRay.1080p.DTS.x264-GRP.mkv")
-	got, err := ResolveTrackerTorrentArtifactPath(api.PreparedMetadata{SourcePath: sourcePath}, filepath.Join(tmp, "state", "upbrr.db"), "MTV")
+	got, err := ResolveTrackerTorrentArtifactPath(api.UploadSubject{SourcePath: sourcePath}, filepath.Join(tmp, "state", "upbrr.db"), "MTV")
 	if err != nil {
 		t.Fatalf("resolve tracker torrent artifact: %v", err)
 	}
