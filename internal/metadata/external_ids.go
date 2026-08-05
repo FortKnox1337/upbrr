@@ -2100,13 +2100,24 @@ func (s *Service) applyTVEpisodeMetadata(
 
 	fallbackSeason, fallbackEpisode := meta.SeasonEpisodeWithParsedFallback()
 	season, episode := meta.CanonicalSeasonEpisode()
+	// Explicit season/episode instructions seed the provider lookups below so
+	// episode titles, overviews, and air dates match the corrected values.
+	manualSeason, manualEpisode := manualSeasonEpisodeInstructionValues(meta.ReleaseNameOverrides)
+	if manualSeason > 0 {
+		season = manualSeason
+	}
+	if manualEpisode > 0 {
+		episode = manualEpisode
+	}
 	initialSeason := season
 	initialEpisode := episode
 	initialSeasonStr := strings.TrimSpace(meta.SeasonStr)
 	initialEpisodeStr := strings.TrimSpace(meta.EpisodeStr)
 	dailyDate := strings.TrimSpace(meta.DailyEpisodeDate)
-	if dailyDate == "" && meta.ReleaseNameOverrides.ManualDate != nil {
-		dailyDate = strings.TrimSpace(*meta.ReleaseNameOverrides.ManualDate)
+	if meta.ReleaseNameOverrides.ManualDate != nil {
+		if manualDate := strings.TrimSpace(*meta.ReleaseNameOverrides.ManualDate); manualDate != "" {
+			dailyDate = manualDate
+		}
 	}
 	wantsSeasonEpisode := wantsSeasonEpisodeNaming(meta.ReleaseNameOverrides)
 	hasManualSeasonEpisode := hasManualSeasonEpisodeOverrides(meta.ReleaseNameOverrides)
@@ -2156,6 +2167,16 @@ func (s *Service) applyTVEpisodeMetadata(
 				episode = absoluteEpisode
 			}
 		}
+	}
+
+	// Explicit instructions stay authoritative over daily-date and
+	// absolute-episode remapping; the provider episode lookups below consume
+	// the manual values.
+	if manualSeason > 0 {
+		season = manualSeason
+	}
+	if manualEpisode > 0 {
+		episode = manualEpisode
 	}
 
 	meta.SeasonInt = season
@@ -2375,6 +2396,12 @@ func (s *Service) applyTVEpisodeMetadata(
 				s.logger.Debugf("metadata: tmdb season details lookup failed: %v", err)
 			}
 		}
+	}
+	if manualSeason > 0 {
+		season = manualSeason
+	}
+	if manualEpisode > 0 {
+		episode = manualEpisode
 	}
 
 	meta.SeasonInt = season
