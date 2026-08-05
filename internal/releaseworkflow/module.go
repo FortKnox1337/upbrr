@@ -348,6 +348,9 @@ func (m *Module) execute(ctx context.Context, ownerID string, command mutation) 
 		m.cleanupUncommittedResult(ownerID, state.Workflow.ID, result)
 		return CommandResult{}, fmt.Errorf("release workflow save: %w", err)
 	}
+	if result.Dupes != nil {
+		m.cleanupSupersededDupeResources(ownerID, state.Workflow.ID, priorWorkflow, state.Workflow)
+	}
 	if result.Media != nil {
 		m.cleanupSupersededMediaResources(ownerID, state.Workflow.ID, priorWorkflow, state.Workflow)
 	}
@@ -360,6 +363,9 @@ func (m *Module) execute(ctx context.Context, ownerID string, command mutation) 
 }
 
 func (m *Module) cleanupUncommittedResult(ownerID string, workflowID api.WorkflowID, result CommandResult) {
+	if result.Dupes != nil {
+		m.private.Delete(ownerID, workflowID, dupePrivateResourceID(result.Dupes.ID))
+	}
 	if result.Media != nil {
 		m.private.Delete(ownerID, workflowID, mediaPrivateResourceID(result.Media.ID))
 	}
@@ -419,6 +425,23 @@ func (m *Module) finalizeRetainedMedia(
 		return fmt.Errorf("release workflow finalize media mutation: %w", err)
 	}
 	return nil
+}
+
+func (m *Module) cleanupSupersededDupeResources(
+	ownerID string,
+	workflowID api.WorkflowID,
+	prior api.ReleaseWorkflow,
+	current api.ReleaseWorkflow,
+) {
+	if prior.Dupes != nil && (current.Dupes == nil || *prior.Dupes != *current.Dupes) {
+		m.private.Delete(ownerID, workflowID, dupePrivateResourceID(prior.Dupes.ID))
+	}
+	if prior.Media != nil && (current.Media == nil || *prior.Media != *current.Media) {
+		m.private.Delete(ownerID, workflowID, mediaPrivateResourceID(prior.Media.ID))
+	}
+	if prior.Descriptions != nil && (current.Descriptions == nil || *prior.Descriptions != *current.Descriptions) {
+		m.private.Delete(ownerID, workflowID, descriptionPrivateResourceID(prior.Descriptions.ID))
+	}
 }
 
 func (m *Module) cleanupSupersededMediaResources(
@@ -2329,7 +2352,7 @@ func (m *Module) recoverAfterRestart(ctx context.Context, ownerID string, state 
 	for index := range workflow.RequiredActions {
 		workflow.RequiredActions[index].WorkflowRevision = nextRevision
 	}
-	if len(workflow.RequiredActions) > 0 {
+	if hasPendingRequiredAction(workflow.RequiredActions) {
 		workflow.Status = api.WorkflowStatusBlocked
 	} else {
 		workflow.Status = api.WorkflowStatusActive
@@ -3211,6 +3234,9 @@ func (m *Module) publishProjections(
 	snapshot.Runtime = *workflow.TrackerRuntime
 	snapshot.Selection = *workflow.Selection
 	snapshot.CreatedAt = now
+	if err := m.stampProjectionActions(&snapshot, nextRevision, now); err != nil {
+		return CommandResult{}, err
+	}
 	if err := snapshot.Validate(); err != nil {
 		return CommandResult{}, fmt.Errorf("release workflow publish projections: %w", err)
 	}
@@ -3426,6 +3452,36 @@ func validatePreflightBuild(
 	return nil
 }
 
+func (m *Module) stampProjectionActions(
+	snapshot *api.TrackerReleaseProjectionSet,
+	revision api.WorkflowRevision,
+	now time.Time,
+) error {
+	actions := make([]api.RequiredAction, 0)
+	for projectionIndex := range snapshot.Projections {
+		projection := &snapshot.Projections[projectionIndex]
+		for actionIndex := range projection.RequiredActions {
+			action := &projection.RequiredActions[actionIndex]
+			if action.ID == "" {
+				id, err := m.newID("action")
+				if err != nil {
+					return err
+				}
+				action.ID = api.RequiredActionID(id)
+			}
+			if action.Status != api.RequiredActionStatusResolved {
+				action.Status = api.RequiredActionStatusPending
+			}
+			action.WorkflowRevision = revision
+			action.TrackerID = projection.TrackerID
+			action.CreatedAt = now
+			actions = append(actions, *action)
+		}
+	}
+	snapshot.RequiredActions = actions
+	return nil
+}
+
 func (m *Module) stampPreflightActions(
 	assessment *api.TrackerPreflightAssessment,
 	revision api.WorkflowRevision,
@@ -3508,7 +3564,7 @@ func finalizedProjectionStatus(
 	if readyCount > 0 {
 		return api.StageStatusReady
 	}
-	if len(actions) > 0 {
+	if hasPendingRequiredAction(actions) {
 		return api.StageStatusBlocked
 	}
 	_ = failures
@@ -3570,7 +3626,7 @@ func (m *Module) checkDuplicates(
 		return CommandResult{}, err
 	}
 	snapshot.Status = dupeStageStatus(snapshot.Results)
-	result, err := m.publishDupes(ownerID, state, nextRevision, now, dupeAssessmentPublication{Snapshot: snapshot})
+	result, err := m.publishDupes(state, nextRevision, now, dupeAssessmentPublication{Snapshot: snapshot})
 	if err != nil {
 		return CommandResult{}, err
 	}
@@ -3649,7 +3705,7 @@ func (m *Module) decideDuplicates(
 		return CommandResult{}, err
 	}
 	snapshot.Status = dupeStageStatus(snapshot.Results)
-	result, err := m.publishDupes(ownerID, state, nextRevision, now, dupeAssessmentPublication{Snapshot: snapshot})
+	result, err := m.publishDupes(state, nextRevision, now, dupeAssessmentPublication{Snapshot: snapshot})
 	if err != nil {
 		return CommandResult{}, err
 	}
@@ -3776,7 +3832,11 @@ func validateDupeBuild(projections api.TrackerReleaseProjectionSet, snapshot api
 			return fmt.Errorf("fingerprint duplicate criteria %s: %w", projection.TrackerID, err)
 		}
 		if result.UploadReleaseName != projection.UploadReleaseName || criteriaFingerprint != projection.CriteriaFingerprint ||
-			result.ProjectionFingerprint != fingerprint || result.CriteriaFingerprint != projection.CriteriaFingerprint {
+			result.ProjectionFingerprint != fingerprint || result.CriteriaFingerprint != projection.CriteriaFingerprint ||
+			result.TargetFingerprint != projection.DuplicateTargetFingerprint ||
+			result.SearchFingerprint != projection.DuplicateSearchFingerprint ||
+			result.PolicyID != projection.DuplicatePolicyID ||
+			result.PolicyFingerprint != projection.DuplicatePolicyFingerprint {
 			return fmt.Errorf("duplicate assessment lineage mismatch for tracker %s", projection.TrackerID)
 		}
 	}
@@ -3850,16 +3910,12 @@ func collectDupeFailures(results []api.TrackerDupeAssessment) []api.WorkflowFail
 func dupePrivateResourceID(id api.DupeAssessmentID) string { return "dupe:" + string(id) }
 
 func (m *Module) publishDupes(
-	ownerID string,
 	state *State,
 	nextRevision api.WorkflowRevision,
 	now time.Time,
 	command dupeAssessmentPublication,
 ) (CommandResult, error) {
 	workflow := state.Workflow
-	priorDupes := workflow.Dupes
-	priorMedia := workflow.Media
-	priorDescriptions := workflow.Descriptions
 	if workflow.Release == nil || workflow.Selection == nil || workflow.TrackerProjections == nil || workflow.TrackerPreflight == nil {
 		return CommandResult{}, fmt.Errorf("%w: duplicate assessment dependencies are incomplete", ErrInvalidTransition)
 	}
@@ -3895,16 +3951,9 @@ func (m *Module) publishDupes(
 	state.Workflow.Media = nil
 	state.Workflow.Descriptions = nil
 	invalidateUploadPlan(&state.Workflow)
-	if priorDupes != nil {
-		m.private.Delete(ownerID, state.Workflow.ID, dupePrivateResourceID(priorDupes.ID))
-	}
-	if priorMedia != nil {
-		m.private.Delete(ownerID, state.Workflow.ID, mediaPrivateResourceID(priorMedia.ID))
-	}
-	if priorDescriptions != nil {
-		m.private.Delete(ownerID, state.Workflow.ID, descriptionPrivateResourceID(priorDescriptions.ID))
-	}
-	setWorkflowStageStatus(&state.Workflow, snapshot.Status, collectDupeActions(snapshot.Results), collectDupeFailures(snapshot.Results))
+	actions := append([]api.RequiredAction(nil), projections.RequiredActions...)
+	actions = append(actions, collectDupeActions(snapshot.Results)...)
+	setWorkflowStageStatus(&state.Workflow, snapshot.Status, actions, collectDupeFailures(snapshot.Results))
 	return CommandResult{Dupes: &snapshot}, nil
 }
 
@@ -5911,7 +5960,7 @@ func (m *Module) publishUploadResult(
 			state.Workflow.Failures = append(state.Workflow.Failures, failure)
 		}
 	}
-	if len(state.Workflow.RequiredActions) > 0 {
+	if hasPendingRequiredAction(state.Workflow.RequiredActions) {
 		state.Workflow.Status = api.WorkflowStatusBlocked
 	}
 	return CommandResult{UploadResult: &snapshot}, nil
@@ -6124,6 +6173,13 @@ func (m *Module) resolveAction(
 	if command.Answer.WorkflowRevision != command.ExpectedRevision {
 		return CommandResult{}, ErrRevisionConflict
 	}
+	var currentProjections *api.TrackerReleaseProjectionSet
+	if state.Workflow.TrackerProjections != nil {
+		currentProjections = currentSnapshot(state.Projections, state.Workflow.TrackerProjections.ID)
+	}
+	if action, ok := releaseNameConfirmationAction(currentProjections, command.Answer.ActionID); ok {
+		return m.reviewTrackerReleaseName(ctx, ownerID, state, nextRevision, now, action, command.Answer)
+	}
 	index := slices.IndexFunc(state.Workflow.RequiredActions, func(action api.RequiredAction) bool {
 		return action.ID == command.Answer.ActionID && action.Status == api.RequiredActionStatusPending
 	})
@@ -6186,7 +6242,7 @@ func (m *Module) resolveAction(
 		})
 	}
 	state.Workflow.RequiredActions = slices.Delete(state.Workflow.RequiredActions, index, index+1)
-	if len(state.Workflow.RequiredActions) == 0 && state.Workflow.Status == api.WorkflowStatusBlocked {
+	if !hasPendingRequiredAction(state.Workflow.RequiredActions) && state.Workflow.Status == api.WorkflowStatusBlocked {
 		if state.Workflow.UploadResult != nil {
 			state.Workflow.Status = api.WorkflowStatusCompleted
 		} else {
@@ -6344,7 +6400,7 @@ func finishUnavailableImageHostingReconciliation(workflow *api.ReleaseWorkflow, 
 			failure.Failure.Operation == api.OperationKindImageHosting &&
 			failure.Resource == action.EffectScopeID
 	})
-	if len(workflow.RequiredActions) == 0 && workflow.Status == api.WorkflowStatusBlocked {
+	if !hasPendingRequiredAction(workflow.RequiredActions) && workflow.Status == api.WorkflowStatusBlocked {
 		workflow.Status = api.WorkflowStatusActive
 	}
 }
@@ -6396,7 +6452,7 @@ func setWorkflowStageStatus(
 ) {
 	workflow.RequiredActions = append([]api.RequiredAction(nil), actions...)
 	workflow.Failures = append([]api.WorkflowFailure(nil), failures...)
-	if len(actions) > 0 {
+	if hasPendingRequiredAction(actions) {
 		workflow.Status = api.WorkflowStatusBlocked
 		return
 	}
@@ -6417,6 +6473,12 @@ func setWorkflowStageStatus(
 		api.StageStatusUnavailable:
 		workflow.Status = api.WorkflowStatusActive
 	}
+}
+
+func hasPendingRequiredAction(actions []api.RequiredAction) bool {
+	return slices.ContainsFunc(actions, func(action api.RequiredAction) bool {
+		return action.Status == "" || action.Status == api.RequiredActionStatusPending
+	})
 }
 
 func cloneCommandResult(result CommandResult) (CommandResult, error) {
