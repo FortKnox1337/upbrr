@@ -324,7 +324,7 @@ var trackerResponsibilityLedger = []trackerResponsibilityRow{
 		taxonomyOwner:     "standalone/hdb/taxonomy.go",
 		descriptionOwner:  "standalone/hdb/description.go",
 		descriptionGroup:  "hdb",
-		releaseNamePolicy: "standalone/hdb/v2",
+		releaseNamePolicy: "standalone/hdb/v3",
 		projectorVersion:  "standalone-v2",
 		principalName:     "name",
 	},
