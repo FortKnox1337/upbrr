@@ -200,7 +200,7 @@ func TestCaptureFrameRecoversFromBlackFrameWithTimestampOffset(t *testing.T) {
 		t.Fatal("expected non-empty output file")
 	}
 
-	wantTimestamps := []string{"1.000", "2.000"}
+	wantTimestamps := []string{"1.000", "3.000"}
 	if !slices.Equal(runner.timestamps, wantTimestamps) {
 		t.Fatalf("attempted timestamps = %v, want %v", runner.timestamps, wantTimestamps)
 	}
@@ -209,12 +209,19 @@ func TestCaptureFrameRecoversFromBlackFrameWithTimestampOffset(t *testing.T) {
 func TestCaptureFrameContinuesOffsetsAfterNoImage(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "screen.png")
 	runner := &timestampSensitiveRunner{
-		blackTimestamps: map[string]struct{}{"1.000": {}},
+		blackTimestamps: map[string]struct{}{"64.000": {}},
 		noImageTimestamps: map[string]struct{}{
-			"2.000": {},
-			"3.000": {},
-			"4.000": {},
-			"6.000": {},
+			"66.000":  {},
+			"68.000":  {},
+			"72.000":  {},
+			"80.000":  {},
+			"96.000":  {},
+			"128.000": {},
+			"62.000":  {},
+			"60.000":  {},
+			"56.000":  {},
+			"48.000":  {},
+			"32.000":  {},
 		},
 		blackPayload: testPNGBytes(t, color.RGBA{A: 255}),
 		validPayload: testPNGBytes(t, color.RGBA{R: 200, A: 255}),
@@ -223,15 +230,57 @@ func TestCaptureFrameContinuesOffsetsAfterNoImage(t *testing.T) {
 	_, err := captureFrame(context.Background(), runner, "ffmpeg", captureRequest{
 		InputPath:  "example.mkv",
 		OutputPath: output,
-		Timestamp:  1,
+		Timestamp:  64,
 	}, api.NopLogger{})
 	if err != nil {
-		t.Fatalf("expected negative timestamp offset to recover after empty positive offsets, got error: %v", err)
+		t.Fatalf("expected final timestamp offset to recover after empty earlier offsets, got error: %v", err)
 	}
 
-	wantTimestamps := []string{"1.000", "2.000", "3.000", "4.000", "6.000", "0.000"}
+	wantTimestamps := []string{
+		"64.000", "66.000", "68.000", "72.000", "80.000", "96.000", "128.000",
+		"62.000", "60.000", "56.000", "48.000", "32.000", "0.000",
+	}
 	if !slices.Equal(runner.timestamps, wantTimestamps) {
 		t.Fatalf("attempted timestamps = %v, want %v", runner.timestamps, wantTimestamps)
+	}
+}
+
+func TestCaptureFrameSkipsNegativeTimestampOffsets(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "screen.png")
+	runner := &timestampSensitiveRunner{
+		blackTimestamps: map[string]struct{}{"1.000": {}},
+		noImageTimestamps: map[string]struct{}{
+			"3.000":  {},
+			"5.000":  {},
+			"9.000":  {},
+			"17.000": {},
+			"33.000": {},
+			"65.000": {},
+		},
+		blackPayload: testPNGBytes(t, color.RGBA{A: 255}),
+	}
+
+	_, err := captureFrame(context.Background(), runner, "ffmpeg", captureRequest{
+		InputPath:  "example.mkv",
+		OutputPath: output,
+		Timestamp:  1,
+	}, api.NopLogger{})
+	if !errors.Is(err, errFFmpegNoImage) {
+		t.Fatalf("capture error = %v, want no image after all non-negative offsets", err)
+	}
+
+	wantTimestamps := []string{"1.000", "3.000", "5.000", "9.000", "17.000", "33.000", "65.000"}
+	if !slices.Equal(runner.timestamps, wantTimestamps) {
+		t.Fatalf("attempted timestamps = %v, want %v", runner.timestamps, wantTimestamps)
+	}
+	for _, timestamp := range runner.timestamps {
+		value, parseErr := strconv.ParseFloat(timestamp, 64)
+		if parseErr != nil {
+			t.Fatalf("parse attempted timestamp %q: %v", timestamp, parseErr)
+		}
+		if value < 0 {
+			t.Fatalf("runner received negative timestamp %q", timestamp)
+		}
 	}
 }
 
@@ -244,16 +293,16 @@ func TestCaptureFrameValidatesBlackSourceBeforeOverlay(t *testing.T) {
 	}
 
 	_, err := captureFrame(context.Background(), runner, "ffmpeg", captureRequest{
-		InputPath:   "example.mkv",
-		OutputPath:  output,
-		Timestamp:   1,
+		InputPath:    "example.mkv",
+		OutputPath:   output,
+		Timestamp:    1,
 		FrameOverlay: true,
 	}, api.NopLogger{})
 	if err != nil {
 		t.Fatalf("expected black source frame to recover before overlay, got error: %v", err)
 	}
 
-	wantTimestamps := []string{"1.000", "2.000", "2.000"}
+	wantTimestamps := []string{"1.000", "3.000", "3.000"}
 	if !slices.Equal(runner.timestamps, wantTimestamps) {
 		t.Fatalf("attempted timestamps = %v, want %v", runner.timestamps, wantTimestamps)
 	}
