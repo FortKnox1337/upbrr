@@ -123,6 +123,27 @@ func TestPTPEmptyIMDbLookupIsComplete(t *testing.T) {
 	}
 }
 
+func TestPTPIMDbLookupCountMismatchIsIncomplete(t *testing.T) {
+	t.Parallel()
+
+	client := &http.Client{Transport: ptpRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"TotalResults":"1","Movies":[],"Page":"1"}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	handler := dupe.NewAdapter(New(), "PTP", config.Config{Trackers: config.TrackersConfig{
+		Trackers: map[string]config.TrackerConfig{
+			"PTP": {PTPAPIUser: "api-user", PTPAPIKey: "api-key"},
+		},
+	}}, client, api.NopLogger{})
+	result := handler.Search(context.Background(), api.DuplicateSubject{Identity: api.ExternalIdentity{IMDBID: 1234567}})
+	if search := result.SearchEvidence(); search.Complete || len(search.Warnings) != 1 || len(result.Entries()) != 0 {
+		t.Fatalf("mismatched PTP search = %#v entries=%#v", search, result.Entries())
+	}
+}
+
 func TestPTPMalformedGroupPayloadFails(t *testing.T) {
 	t.Parallel()
 
@@ -269,7 +290,7 @@ func TestPTPSetCapacityFamilies(t *testing.T) {
 					SizeKnown:  true,
 				}},
 				*duplicatePolicy(),
-				dupe.SearchEvidence{Complete: true},
+				dupe.SearchEvidence{Complete: true, WorkScope: dupe.WorkScopeTrackerGroup},
 			).Candidates[0]
 			if got.Relation != test.want {
 				t.Fatalf("PTP set relation = %#v, want %s", got, test.want)
@@ -308,13 +329,17 @@ func TestPTPStructuredExactIdentity(t *testing.T) {
 		SizeKnown:  true,
 	}
 
-	got := dupe.Evaluate(target, []dupe.TrackerCandidate{candidate}, *duplicatePolicy(), dupe.SearchEvidence{Complete: true}).Candidates[0]
+	got := dupe.Evaluate(target, []dupe.TrackerCandidate{candidate}, *duplicatePolicy(), dupe.SearchEvidence{
+		Complete: true, WorkScope: dupe.WorkScopeTrackerGroup,
+	}).Candidates[0]
 	if got.Relation != api.DupeRelationExactDuplicate || got.WinningRule != "ptp/duplicate/v2/structured_exact_identity" {
 		t.Fatalf("PTP structured exact identity = %#v", got)
 	}
 
 	candidate.SizeBytes--
-	got = dupe.Evaluate(target, []dupe.TrackerCandidate{candidate}, *duplicatePolicy(), dupe.SearchEvidence{Complete: true}).Candidates[0]
+	got = dupe.Evaluate(target, []dupe.TrackerCandidate{candidate}, *duplicatePolicy(), dupe.SearchEvidence{
+		Complete: true, WorkScope: dupe.WorkScopeTrackerGroup,
+	}).Candidates[0]
 	if got.Relation == api.DupeRelationExactDuplicate {
 		t.Fatalf("PTP mismatched size classified exact: %#v", got)
 	}
@@ -356,7 +381,7 @@ func TestPTPSDSetCapacityDropsWhenHigherAlternativeExists(t *testing.T) {
 			},
 		},
 		*duplicatePolicy(),
-		dupe.SearchEvidence{Complete: true},
+		dupe.SearchEvidence{Complete: true, WorkScope: dupe.WorkScopeTrackerGroup},
 	)
 	if got.SetFindings[0].Capacity != 1 || got.Candidates[0].Relation != api.DupeRelationManualReview {
 		t.Fatalf("PTP SD capacity override = %#v", got)

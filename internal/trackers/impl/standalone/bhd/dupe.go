@@ -59,9 +59,6 @@ func (s *dupeSearcher) Search(ctx context.Context, meta api.DuplicateSubject) du
 	}
 	payload := map[string]any{"action": "search", "categories": category}
 	payload["types"] = nil
-	if dupeIsSD(meta) {
-		payload["categories"], payload["types"] = nil, nil
-	}
 	if tmdbID != 0 {
 		payload["tmdb_id"] = tmdbPrefix + "/" + strconv.Itoa(tmdbID)
 	} else {
@@ -81,6 +78,9 @@ func (s *dupeSearcher) Search(ctx context.Context, meta api.DuplicateSubject) du
 	entries := make([]api.DupeEntry, 0)
 	complete := false
 	pages := 0
+	expectedTotalPages := -1
+	expectedTotalResults := -1
+	firstPageHasPagination := false
 	for pageNumber := 1; pageNumber <= maxPages; pageNumber++ {
 		pagePayload := maps.Clone(payload)
 		pagePayload["page"] = pageNumber
@@ -115,26 +115,52 @@ func (s *dupeSearcher) Search(ctx context.Context, meta api.DuplicateSubject) du
 		pageEntries := bhdEntries(decoded)
 		entries = append(entries, pageEntries...)
 		pages++
-		totalPages := int(bhdInt(decoded["total_pages"]))
-		switch {
-		case totalPages > 0 && pageNumber >= totalPages:
-			complete = true
-		case totalPages == 0 && len(pageEntries) < pageSize:
-			complete = true
-		default:
-			continue
+		rawPage, pageKnown := decoded["page"]
+		rawTotalPages, totalPagesKnown := decoded["total_pages"]
+		rawTotalResults, totalResultsKnown := decoded["total_results"]
+		hasPagination := pageKnown || totalPagesKnown || totalResultsKnown
+		if pageNumber == 1 {
+			firstPageHasPagination = hasPagination
+		} else if hasPagination != firstPageHasPagination {
+			break
 		}
-		break
+		if expectedTotalPages >= 0 || hasPagination {
+			responsePage, validPage := bhdNonNegativeInt(rawPage)
+			totalPages, validTotalPages := bhdNonNegativeInt(rawTotalPages)
+			totalResults, validTotalResults := bhdNonNegativeInt(rawTotalResults)
+			if !pageKnown || !totalPagesKnown || !totalResultsKnown || !validPage || !validTotalPages || !validTotalResults || responsePage != pageNumber {
+				break
+			}
+			if expectedTotalPages < 0 {
+				expectedTotalPages, expectedTotalResults = totalPages, totalResults
+			} else if totalPages != expectedTotalPages || totalResults != expectedTotalResults {
+				break
+			}
+			switch {
+			case totalPages == 0 && totalResults == 0 && len(entries) == 0:
+				complete = true
+			case totalPages > 0 && pageNumber == totalPages && len(entries) == totalResults:
+				complete = true
+			case totalPages > 0 && pageNumber < totalPages && len(pageEntries) > 0:
+				continue
+			}
+			break
+		}
+		if len(pageEntries) < pageSize {
+			complete = true
+			break
+		}
 	}
 	warnings := []string(nil)
 	if !complete {
 		warnings = []string{"BHD search reached a pagination bound or omitted completion metadata"}
 	}
 	return dupe.ResolvedWithSearch(entries, warnings, dupe.SearchEvidence{
-		Complete: complete,
-		Pages:    pages,
-		Scope:    "work_category",
-		Warnings: warnings,
+		Complete:  complete,
+		WorkScope: dupe.WorkScopeProviderID,
+		Pages:     pages,
+		Scope:     "work_category",
+		Warnings:  warnings,
 	})
 }
 
@@ -293,11 +319,6 @@ func bhdSeason(meta api.DuplicateSubject) string {
 	return ""
 }
 
-func dupeIsSD(meta api.DuplicateSubject) bool {
-	resolution := normalizeResolution(meta.Release.Resolution)
-	return strings.Contains(resolution, "480") || strings.Contains(resolution, "540") || strings.Contains(resolution, "576")
-}
-
 func normalizeBHDSeason(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -346,4 +367,9 @@ func bhdInt(value any) int64 {
 	default:
 		return 0
 	}
+}
+
+func bhdNonNegativeInt(value any) (int, bool) {
+	parsed, err := strconv.Atoi(strings.TrimSpace(fmt.Sprint(value)))
+	return parsed, err == nil && parsed >= 0
 }

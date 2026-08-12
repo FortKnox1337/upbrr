@@ -154,6 +154,31 @@ func TestDupeSearcherANTPaginationBoundFailsClosed(t *testing.T) {
 	}
 }
 
+func TestDupeSearcherANTTotalChangeFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests++
+		total := 101
+		count := 100
+		if requests == 2 {
+			total = 102
+			count = 1
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(antSearchPageJSON(t, (requests-1)*100, total, count, true))),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	searcher := dupe.NewAdapter(New(), "ANT", antDupeTestConfig(), client, api.NopLogger{})
+	result := searcher.Search(context.Background(), api.DuplicateSubject{Identity: api.ExternalIdentity{TMDBID: 123}})
+	if search := result.SearchEvidence(); search.Complete || search.Pages != 2 || len(search.Warnings) != 1 || len(result.Entries()) != 101 {
+		t.Fatalf("changed total search=%#v entries=%d", search, len(result.Entries()))
+	}
+}
+
 func TestDupeSearcherMissingCredentialsSkips(t *testing.T) {
 	t.Parallel()
 	searcher := dupe.NewAdapter(New(), "ANT", config.Config{}, http.DefaultClient, api.NopLogger{})
@@ -212,7 +237,7 @@ func TestANTCandidatePreservesDiscFields(t *testing.T) {
 			map[string]any{"name": "BDMV/BACKUP/BDJO/00000.bdjo"},
 			map[string]any{"name": "BDMV/index.bdmv"},
 		},
-	}}}, "")
+	}}})
 	if len(entries) != 1 || entries[0].Name != "generated.123.torrent" || entries[0].CanonicalType != "DISC" ||
 		entries[0].Container != "m2ts" || entries[0].Group != "GRP" || len(entries[0].Flags) != 1 {
 		t.Fatalf("ANT disc entry = %#v", entries)
@@ -232,7 +257,7 @@ func TestANTListedWEBFileCoexistsWithDisc(t *testing.T) {
 		"files": []any{map[string]any{
 			"name": "Example.Release.2026.1080p.WEB-DL.H.264-WEBGRP.mkv",
 		}},
-	}}}, "")
+	}}})
 	if len(entries) != 1 || entries[0].Name != "Example.Release.2026.1080p.WEB-DL.H.264-WEBGRP.mkv" || entries[0].Source != "WEB" {
 		t.Fatalf("ANT WEB entry = %#v", entries)
 	}
