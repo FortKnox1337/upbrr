@@ -5,6 +5,7 @@ package impl
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,7 @@ import (
 	bhdimpl "github.com/autobrr/upbrr/internal/trackers/impl/standalone/bhd"
 	bjsimpl "github.com/autobrr/upbrr/internal/trackers/impl/standalone/bjs"
 	btimpl "github.com/autobrr/upbrr/internal/trackers/impl/standalone/bt"
+	btnimpl "github.com/autobrr/upbrr/internal/trackers/impl/standalone/btn"
 	cztimpl "github.com/autobrr/upbrr/internal/trackers/impl/standalone/czt"
 	dcimpl "github.com/autobrr/upbrr/internal/trackers/impl/standalone/dc"
 	ffimpl "github.com/autobrr/upbrr/internal/trackers/impl/standalone/ff"
@@ -336,6 +338,21 @@ func TestSiteHandlersSearch(t *testing.T) {
 			effective:  true,
 		},
 		{
+			name:    "BTN",
+			tracker: "BTN",
+			meta: api.DuplicateSubject{
+				Identity:   api.ExternalIdentity{Category: api.CanonicalCategoryTV, TVDBID: 123},
+				SourcePath: "x",
+			},
+			handler: func(cfg config.Config, client *http.Client) dupe.Adapter {
+				return dupe.NewAdapter(btnimpl.New(), "BTN", cfg, client, api.NopLogger{})
+			},
+			validate:   validateNoEntries,
+			scope:      dupe.WorkScopeProviderID,
+			enumerated: true,
+			effective:  true,
+		},
+		{
 			name:    "CZT",
 			tracker: "CZT",
 			meta:    api.DuplicateSubject{Release: api.ReleaseInfo{Title: "Example Release 2026"}, SourcePath: "x"},
@@ -475,6 +492,29 @@ func TestSiteHandlersSearch(t *testing.T) {
 					}
 				case "BHD":
 					_, _ = w.Write([]byte(`{"status_code":1,"page":1,"total_pages":0,"total_results":0,"results":[]}`))
+					return
+				case "BTN":
+					if r.Method != http.MethodPost || r.URL.Path != "/" {
+						http.Error(w, "unexpected BTN search route", http.StatusBadRequest)
+						return
+					}
+					var request struct {
+						JSONRPC string            `json:"jsonrpc"`
+						ID      string            `json:"id"`
+						Method  string            `json:"method"`
+						Params  []json.RawMessage `json:"params"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.JSONRPC != "2.0" ||
+						request.ID != "upbrr-btn-search" || request.Method != "getTorrents" || len(request.Params) != 4 {
+						http.Error(w, "invalid BTN search request", http.StatusBadRequest)
+						return
+					}
+					var filter map[string]string
+					if err := json.Unmarshal(request.Params[1], &filter); err != nil || filter["tvdb"] != "123" {
+						http.Error(w, "missing BTN TVDB provider ID", http.StatusBadRequest)
+						return
+					}
+					_, _ = w.Write([]byte(`{"result":{"results":"0","torrents":{}}}`))
 					return
 				case "CZT", "DC", "RTF", "SPD":
 					_, _ = w.Write([]byte(`[]`))

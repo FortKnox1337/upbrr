@@ -1358,6 +1358,9 @@
           "relation": {
             "$ref": "#/components/schemas/DupeRelation"
           },
+          "releaseOrigin": {
+            "type": "string"
+          },
           "repack": {
             "type": "string"
           },
@@ -8093,6 +8096,9 @@
             "type": "string"
           },
           "region": {
+            "type": "string"
+          },
+          "releaseOrigin": {
             "type": "string"
           },
           "repack": {
