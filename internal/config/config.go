@@ -203,6 +203,16 @@ func (c *ScreenshotHandlingConfig) ResolvedMaxMenuItems() int {
 	return c.MaxMenuItems
 }
 
+// ResolvedMinSuccessfulUploads returns how many images a host must publish for
+// a tracker before a partially failed image-host batch still counts as usable.
+// Zero or negative disables the allowance, so any failed image fails the batch.
+func (c *ScreenshotHandlingConfig) ResolvedMinSuccessfulUploads() int {
+	if c.MinSuccessfulUploads <= 0 {
+		return 0
+	}
+	return c.MinSuccessfulUploads
+}
+
 type DescriptionSettingsConfig struct {
 	AddLogo                 bool   `yaml:"add_logo"`
 	LogoSize                int    `yaml:"logo_size"`
@@ -942,6 +952,9 @@ func (c Config) Validate() error {
 	}
 	if c.ScreenshotHandling.MaxMenuItems > MaxDVDMenuItems {
 		return fmt.Errorf("config: screenshot_handling.max_menu_items must not exceed %d", MaxDVDMenuItems)
+	}
+	if c.ScreenshotHandling.FFmpegCompression < 0 || c.ScreenshotHandling.FFmpegCompression > 9 {
+		return errors.New("config: screenshot_handling.ffmpeg_compression must be between 0 and 9")
 	}
 	if c.PostUpload.MaxConcurrentTrackers < 0 {
 		return errors.New("config: post_upload.max_concurrent_tracker_uploads must be zero or greater")
