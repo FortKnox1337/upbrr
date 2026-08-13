@@ -428,7 +428,9 @@ func (s TrackerProjectionInstructionSnapshot) Clone() (TrackerProjectionInstruct
 	return cloneWorkflowValue(s)
 }
 
-// Normalize returns projection instructions keyed by normalized stable tracker ID.
+// Normalize returns detached projection instructions keyed by normalized stable
+// tracker ID. Blank IDs are omitted; IDs that collide after normalization return
+// an error.
 func (s TrackerProjectionInstructionSnapshot) Normalize() (TrackerProjectionInstructionSnapshot, error) {
 	normalized, err := s.Clone()
 	if err != nil {
@@ -438,6 +440,9 @@ func (s TrackerProjectionInstructionSnapshot) Normalize() (TrackerProjectionInst
 	for trackerID, value := range normalized.Instructions {
 		trackerID = normalizeTrackerID(trackerID)
 		if trackerID != "" {
+			if _, exists := instructions[trackerID]; exists {
+				return TrackerProjectionInstructionSnapshot{}, fmt.Errorf("tracker projection instructions contain duplicate tracker id %s", trackerID)
+			}
 			instructions[trackerID] = value
 		}
 	}
@@ -567,6 +572,35 @@ func (s TrackerReleaseProjectionSet) Validate() error {
 			if err := validateWorkflowFingerprint(fingerprint); err != nil {
 				return fmt.Errorf("tracker projection %s %s: %w", id, label, err)
 			}
+		}
+		for label, fingerprint := range map[string]WorkflowFingerprint{
+			"waivable rules":     projection.WaivableRuleFingerprint,
+			"rule authorization": projection.RuleAuthorizationFingerprint,
+		} {
+			if fingerprint == "" {
+				continue
+			}
+			if err := validateWorkflowFingerprint(fingerprint); err != nil {
+				return fmt.Errorf("tracker projection %s %s: %w", id, label, err)
+			}
+		}
+		if projection.RuleAuthorizationFingerprint != "" &&
+			projection.RuleAuthorizationFingerprint != projection.WaivableRuleFingerprint {
+			return fmt.Errorf("tracker projection %s rule authorization does not match current waivable rules", id)
+		}
+		hasWaivableDecision := false
+		for _, decision := range projection.PolicyDecisions {
+			disposition := NormalizeRuleDisposition(decision.Disposition)
+			if disposition == RuleDispositionWaivable {
+				hasWaivableDecision = true
+			}
+			if projection.RuleAuthorizationFingerprint != "" &&
+				disposition == RuleDispositionWaivable && decision.Blocking {
+				return fmt.Errorf("tracker projection %s has blocking waivable rule authority", id)
+			}
+		}
+		if projection.WaivableRuleFingerprint != "" && !hasWaivableDecision {
+			return fmt.Errorf("tracker projection %s has a waivable rule fingerprint without a waivable decision", id)
 		}
 		hasExtendedLineage := projection.NamingPolicyID != "" || projection.NamingFingerprint != "" ||
 			projection.DuplicatePolicyID != "" || projection.DuplicatePolicyFingerprint != "" ||

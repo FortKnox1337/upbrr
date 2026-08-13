@@ -10,7 +10,8 @@ import (
 )
 
 // UploadPersistence exposes only persisted state used by tracker preparation,
-// description assets, image-host resolution, and upload-ledger finalization.
+// rule-decision audit, description assets, image-host resolution, and
+// upload-ledger finalization.
 // Implementations preserve canonical query ordering and atomic slot updates.
 type UploadPersistence interface {
 	GetDescriptionOverride(context.Context, string, string) (api.DescriptionOverride, error)
@@ -22,6 +23,7 @@ type UploadPersistence interface {
 	ReplaceScreenshotSlots(context.Context, string, []api.ScreenshotSlot) error
 	UpsertScreenshotSlotVariants(context.Context, string, []api.ScreenshotSlotVariant) error
 	DeleteUploadedImage(context.Context, string, string, string) error
+	SaveTrackerRuleFailures(context.Context, string, string, []api.TrackerRuleFailure) error
 	CreateUploadRecord(context.Context, api.UploadRecord) error
 	UpdateLatestUploadRecordStatus(context.Context, string, string, string) error
 }

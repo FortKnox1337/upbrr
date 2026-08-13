@@ -312,6 +312,9 @@ func continuationActionBlocksAllLanesForMode(
 	action api.RequiredAction,
 	mode TrackerDecisionMode,
 ) bool {
+	if _, _, projectionAuthorization := projectionRuleAuthorizationAction(current.Projections, action.ID); projectionAuthorization {
+		return true
+	}
 	if normalizeTrackerDecisionMode(mode) == TrackerDecisionModePostDupeGate &&
 		action.Kind == api.RequiredActionReviewDuplicates {
 		return true

@@ -76,6 +76,7 @@ type trackerPlanSlot struct {
 	plan                     TrackerPlan
 	failure                  *TrackerFailure
 	summary                  api.UploadSummary
+	ruleFailures             []api.TrackerRuleFailure
 	canceledDuringSubmission bool
 }
 
@@ -186,6 +187,9 @@ func (s *Service) prepareUploadPlans(
 		for idx := range jobs {
 			tracker := resolved[idx]
 			slot := trackerPlanSlot{tracker: tracker}
+			if projection, ok := projections[normalizeTrackerName(tracker)]; ok {
+				slot.ruleFailures = projectedRuleFailureRecords(projection)
+			}
 			emitTrackerPlanProgress(ctx, meta.SourcePath, tracker, "tracker_preparation", "running", "Preparing tracker plan")
 			if failure := banned[normalizeTrackerName(tracker)]; failure != nil {
 				slot.failure = failure
@@ -561,6 +565,16 @@ func (s *Service) createPendingRecords(ctx context.Context, meta api.UploadSubje
 		if slot.failure != nil || slot.plan.Intent() != PreparationIntentUpload {
 			continue
 		}
+		if slot.ruleFailures != nil {
+			if err := s.repo.SaveTrackerRuleFailures(ctx, meta.SourcePath, slot.tracker, slot.ruleFailures); err != nil {
+				slot.failure = trackerFailure(slot.tracker, "rule_history", err)
+				if releaseErr := slot.plan.Release(); releaseErr != nil {
+					s.warnPlanRelease(slot.tracker, releaseErr)
+				}
+				emitTrackerPlanProgress(ctx, meta.SourcePath, slot.tracker, "tracker_upload", "failed", slot.failure.Message)
+				continue
+			}
+		}
 		status := "pending"
 		if IsInternalGroup(s.cfg, slot.tracker, meta) {
 			status = "pending-internal"
@@ -579,6 +593,32 @@ func (s *Service) createPendingRecords(ctx context.Context, meta api.UploadSubje
 			continue
 		}
 	}
+}
+
+// projectedRuleFailureRecords converts rule decisions into persisted audit
+// rows. A waivable decision is marked authorized only when both projection
+// fingerprints match exactly. It returns nil when no decision qualifies.
+func projectedRuleFailureRecords(projection api.TrackerReleaseProjection) []api.TrackerRuleFailure {
+	records := make([]api.TrackerRuleFailure, 0, len(projection.PolicyDecisions))
+	authorized := projection.RuleAuthorizationFingerprint != "" &&
+		projection.RuleAuthorizationFingerprint == projection.WaivableRuleFingerprint
+	for _, decision := range projection.PolicyDecisions {
+		if strings.TrimSpace(decision.Code) == "" || decision.Disposition == "" {
+			continue
+		}
+		disposition := api.NormalizeRuleDisposition(decision.Disposition)
+		records = append(records, api.TrackerRuleFailure{
+			Tracker:     string(projection.TrackerID),
+			Rule:        strings.TrimSpace(decision.Code),
+			Reason:      strings.TrimSpace(decision.Message),
+			Disposition: disposition,
+			Authorized:  disposition == api.RuleDispositionWaivable && authorized,
+		})
+	}
+	if len(records) == 0 {
+		return nil
+	}
+	return records
 }
 
 // submitTrackerPlans finishes reusable-base uploads first, then waits the

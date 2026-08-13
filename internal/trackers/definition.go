@@ -72,6 +72,10 @@ type PreparationInput struct {
 	Meta api.UploadSubject
 	// Projection locks reviewed tracker-local names and taxonomy for final preparation.
 	Projection *api.TrackerReleaseProjection
+	// AuthorizedRuleFingerprint carries server-owned authority into projection
+	// for one exact tracker-local set of waivable failures. A mismatch grants no
+	// authorization.
+	AuthorizedRuleFingerprint api.WorkflowFingerprint
 	// RequestedUploadName is an optional user instruction consumed by the
 	// tracker naming policy before projection. A non-nil empty value is invalid.
 	RequestedUploadName *string

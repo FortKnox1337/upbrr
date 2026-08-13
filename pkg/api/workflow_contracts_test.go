@@ -179,6 +179,35 @@ func TestTrackerProjectionInstructionsPreserveAbsentNullAndEmptyName(t *testing.
 	}
 }
 
+func TestTrackerProjectionInstructionsIgnoreRuleAuthorization(t *testing.T) {
+	t.Parallel()
+
+	var instructions TrackerProjectionInstructions
+	if err := json.Unmarshal([]byte(`{"authorizedRuleFingerprint":"forged"}`), &instructions); err != nil {
+		t.Fatalf("unmarshal projection rule authorization: %v", err)
+	}
+	payload, err := json.Marshal(instructions)
+	if err != nil {
+		t.Fatalf("marshal projection rule authorization: %v", err)
+	}
+	if strings.Contains(string(payload), "authorizedRuleFingerprint") {
+		t.Fatalf("caller rule authorization survived: %s", payload)
+	}
+}
+
+func TestTrackerProjectionInstructionNormalizationRejectsDuplicateTrackerIDs(t *testing.T) {
+	t.Parallel()
+
+	duplicateTrackerID := TrackerID(" alpha ")
+	_, err := (TrackerProjectionInstructionSnapshot{Instructions: map[TrackerID]TrackerProjectionInstructions{
+		"ALPHA":            {},
+		duplicateTrackerID: {},
+	}}).Normalize()
+	if err == nil || !strings.Contains(err.Error(), "duplicate tracker id ALPHA") {
+		t.Fatalf("duplicate normalized tracker ID error = %v", err)
+	}
+}
+
 func TestTrackerCatalogNormalizesAliasesAndFingerprintsDeterministically(t *testing.T) {
 	t.Parallel()
 

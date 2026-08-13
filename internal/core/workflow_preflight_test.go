@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"syscall"
@@ -698,6 +699,33 @@ func TestWorkflowPreflightRejectsMissingPreparedResourceBeforeAuth(t *testing.T)
 		Readiness:                   api.ReadinessStatusReady,
 		DupeReady:                   true,
 		UploadReady:                 true,
+		PolicyDecisions: []api.TrackerPolicyDecision{
+			{Code: "previous_rule", Disposition: api.RuleDispositionWaivable},
+			{Code: "retained_decision", Decision: "allowed"},
+		},
+		RequiredActions: []api.RequiredAction{
+			{Kind: api.RequiredActionAuthorizeRules, TrackerID: "RESOURCE"},
+			{Kind: api.RequiredActionReviewDuplicates, TrackerID: "RESOURCE"},
+		},
+		Failures: []api.WorkflowFailure{
+			{
+				Failure:   api.OperationFailure{Code: api.OperationFailureNoEligibleTrackers, Operation: api.OperationKindDuplicateCheck},
+				TrackerID: "RESOURCE",
+			},
+			{
+				Failure:   api.OperationFailure{Code: api.OperationFailureMissingPrerequisite, Operation: api.OperationKindPreparation},
+				TrackerID: "RESOURCE",
+			},
+		},
+	}
+	projectionSet := api.TrackerReleaseProjectionSet{
+		ID:          "projection-set-resource",
+		Revision:    1,
+		Projections: []api.TrackerReleaseProjection{projection},
+	}
+	originalProjectionSet, err := projectionSet.Clone()
+	if err != nil {
+		t.Fatalf("clone input projection set: %v", err)
 	}
 	capabilityCalls := 0
 	validateCalls := 0
@@ -715,11 +743,7 @@ func TestWorkflowPreflightRejectsMissingPreparedResourceBeforeAuth(t *testing.T)
 		subject,
 		api.TrackerCatalogSnapshot{Trackers: []api.TrackerCatalogDescriptor{{TrackerID: "RESOURCE"}}},
 		api.TrackerRuntimeSnapshot{Fingerprint: fingerprint("runtime")},
-		api.TrackerReleaseProjectionSet{
-			ID:          "projection-set-resource",
-			Revision:    1,
-			Projections: []api.TrackerReleaseProjection{projection},
-		},
+		projectionSet,
 		time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC),
 	)
 	if err != nil {
@@ -736,6 +760,9 @@ func TestWorkflowPreflightRejectsMissingPreparedResourceBeforeAuth(t *testing.T)
 		return decision.Code == "required_media_resource" && decision.Blocking
 	}) {
 		t.Fatalf("missing local-resource decision: %#v", finalized[0].PolicyDecisions)
+	}
+	if !reflect.DeepEqual(projectionSet, originalProjectionSet) {
+		t.Fatalf("input projection set mutated: got=%#v want=%#v", projectionSet, originalProjectionSet)
 	}
 }
 

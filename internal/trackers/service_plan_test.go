@@ -340,6 +340,96 @@ func TestRetainedUploadPlanExecutesExactReviewedProjectionWithoutRepreparing(t *
 	}
 }
 
+func TestRetainedUploadPlanPersistsAuthorizedRuleAudit(t *testing.T) {
+	t.Parallel()
+
+	var prepared atomic.Int32
+	var submitted atomic.Int32
+	repository := &stubRepo{}
+	registry := NewRegistry()
+	if err := registry.Register(retainedProjectionDefinition{
+		name:      "EXAMPLE",
+		prepared:  &prepared,
+		submitted: &submitted,
+		input:     make(chan PreparationInput, 1),
+	}); err != nil {
+		t.Fatalf("register retained definition: %v", err)
+	}
+	service := NewServiceWithRegistry(config.Config{}, nil, repository, registry)
+	fingerprint, err := api.CanonicalWorkflowFingerprint("authorized-waivable-rules")
+	if err != nil {
+		t.Fatalf("fingerprint waivable rules: %v", err)
+	}
+	retained, err := service.PrepareRetainedUploadPlan(
+		context.Background(),
+		api.UploadSubject{SourcePath: "Example.Release.2026", ReleaseName: "Example.Release.2026-GRP"},
+		[]api.TrackerReleaseProjection{{
+			TrackerID:                    "EXAMPLE",
+			UploadReleaseName:            "Example.Release.2026-GRP",
+			Readiness:                    api.ReadinessStatusReady,
+			UploadReady:                  true,
+			WaivableRuleFingerprint:      fingerprint,
+			RuleAuthorizationFingerprint: fingerprint,
+			PolicyDecisions: []api.TrackerPolicyDecision{
+				{
+					Code:        "language_rule",
+					Decision:    "authorized",
+					Message:     "language waiver accepted",
+					Disposition: api.RuleDispositionWaivable,
+				},
+				{
+					Code:        "metadata_note",
+					Decision:    string(api.RuleDispositionAdvisory),
+					Message:     "advisory evidence",
+					Disposition: api.RuleDispositionAdvisory,
+				},
+			},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("prepare retained upload plan: %v", err)
+	}
+	if _, err := retained.Execute(context.Background()); err != nil {
+		t.Fatalf("execute retained upload plan: %v", err)
+	}
+	repository.mu.Lock()
+	saves := append([]ruleFailureSave(nil), repository.ruleFailureSaves...)
+	repository.mu.Unlock()
+	if len(saves) != 1 || saves[0].sourcePath != "Example.Release.2026" || saves[0].tracker != "EXAMPLE" ||
+		len(saves[0].failures) != 2 {
+		t.Fatalf("rule audit saves = %#v", saves)
+	}
+	if !saves[0].failures[0].Authorized || saves[0].failures[0].Disposition != api.RuleDispositionWaivable ||
+		saves[0].failures[1].Authorized || saves[0].failures[1].Disposition != api.RuleDispositionAdvisory {
+		t.Fatalf("persisted rule audit = %#v", saves[0].failures)
+	}
+}
+
+func TestProjectedRuleFailureRecordsReturnsNilWithoutRecords(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		projection api.TrackerReleaseProjection
+	}{
+		{name: "no decisions"},
+		{
+			name: "all decisions filtered",
+			projection: api.TrackerReleaseProjection{PolicyDecisions: []api.TrackerPolicyDecision{
+				{Disposition: api.RuleDispositionWaivable},
+				{Code: "missing_disposition"},
+			}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if records := projectedRuleFailureRecords(test.projection); records != nil {
+				t.Fatalf("rule failure records = %#v, want nil", records)
+			}
+		})
+	}
+}
+
 func TestRetainedUploadPlanLogsReturnedTorrentPageURL(t *testing.T) {
 	t.Parallel()
 

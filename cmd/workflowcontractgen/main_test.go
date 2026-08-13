@@ -34,6 +34,9 @@ func TestTrackerProjectionInstructionsSchemaPreservesTriStateFields(t *testing.T
 			t.Fatalf("%s schema = %#v", field, property)
 		}
 	}
+	if _, exists := definition.Properties["authorizedRuleFingerprint"]; exists {
+		t.Fatal("projection instructions expose server rule authorization")
+	}
 }
 
 func TestWorkflowPatchStringSchemaPreservesAbsentNullAndString(t *testing.T) {

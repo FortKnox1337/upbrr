@@ -4,8 +4,11 @@
 package trackers
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/autobrr/upbrr/pkg/api"
@@ -87,15 +90,96 @@ func normalizeRuleEvidenceStatus(status api.MetadataEvidenceStatus) api.Metadata
 	}
 }
 
-// RuleFailureBlocksExecution reports whether a validation failure makes the
-// tracker ineligible in the selected workflow execution mode.
-func RuleFailureBlocksExecution(failure api.RuleFailure, mode api.WorkflowExecutionMode) bool {
+// RuleFailureBlocksExecution reports whether a validation failure blocks the
+// selected workflow execution mode. Strict failures always block, advisory
+// failures never block, and authorized waivable failures do not block. Debug
+// mode also bypasses unauthorized waivable failures.
+func RuleFailureBlocksExecution(failure api.RuleFailure, mode api.WorkflowExecutionMode, authorized bool) bool {
 	disposition := api.NormalizeRuleDisposition(failure.Disposition)
 	if disposition == api.RuleDispositionAdvisory {
 		return false
 	}
-	return disposition != api.RuleDispositionWaivable ||
-		api.NormalizeWorkflowExecutionMode(mode) != api.WorkflowExecutionModeDebug
+	if disposition == api.RuleDispositionStrict {
+		return true
+	}
+	return !authorized && api.NormalizeWorkflowExecutionMode(mode) != api.WorkflowExecutionModeDebug
+}
+
+type waivableRuleIdentity struct {
+	Rule           string
+	Reason         string
+	Disposition    api.RuleDisposition
+	EvidenceStatus api.MetadataEvidenceStatus
+}
+
+// WaivableRuleFailureFingerprint identifies the normalized tracker-local
+// waivable failures independently of evaluator return order. It returns an
+// empty fingerprint when failures contains no waivable result.
+func WaivableRuleFailureFingerprint(tracker string, failures []api.RuleFailure) (api.WorkflowFingerprint, error) {
+	identities := make([]waivableRuleIdentity, 0, len(failures))
+	for _, failure := range failures {
+		failure = NormalizeRuleFailure(failure)
+		if failure.Disposition != api.RuleDispositionWaivable {
+			continue
+		}
+		identities = append(identities, waivableRuleIdentity{
+			Rule:           failure.Rule,
+			Reason:         failure.Reason,
+			Disposition:    failure.Disposition,
+			EvidenceStatus: failure.EvidenceStatus,
+		})
+	}
+	if len(identities) == 0 {
+		return "", nil
+	}
+	slices.SortFunc(identities, func(left, right waivableRuleIdentity) int {
+		return cmp.Or(
+			cmp.Compare(left.Rule, right.Rule),
+			cmp.Compare(left.Reason, right.Reason),
+			cmp.Compare(left.EvidenceStatus, right.EvidenceStatus),
+		)
+	})
+	fingerprint, err := api.CanonicalWorkflowFingerprint(struct {
+		Contract string
+		Tracker  string
+		Failures []waivableRuleIdentity
+	}{
+		Contract: "tracker-waivable-rules-v1",
+		Tracker:  strings.ToUpper(strings.TrimSpace(tracker)),
+		Failures: identities,
+	})
+	if err != nil {
+		return "", fmt.Errorf("fingerprint waivable tracker rules: %w", err)
+	}
+	return fingerprint, nil
+}
+
+// FirstBlockingRuleFailure returns the first input failure that blocks tracker
+// preparation. Projection authorization applies only when both stored
+// fingerprints match the current normalized waivable failures; nil means no
+// failure blocks.
+func FirstBlockingRuleFailure(
+	tracker string,
+	failures []api.RuleFailure,
+	mode api.WorkflowExecutionMode,
+	projection *api.TrackerReleaseProjection,
+) (*api.RuleFailure, error) {
+	authorized := false
+	if projection != nil && projection.RuleAuthorizationFingerprint != "" {
+		fingerprint, err := WaivableRuleFailureFingerprint(tracker, failures)
+		if err != nil {
+			return nil, err
+		}
+		authorized = fingerprint != "" &&
+			projection.WaivableRuleFingerprint == fingerprint &&
+			projection.RuleAuthorizationFingerprint == fingerprint
+	}
+	for index := range failures {
+		if RuleFailureBlocksExecution(failures[index], mode, authorized) {
+			return &failures[index], nil
+		}
+	}
+	return nil, nil
 }
 
 // LanguageRule configures waivable language requirements and the release types to which they apply.

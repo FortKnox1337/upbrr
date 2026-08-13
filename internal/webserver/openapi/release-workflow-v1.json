@@ -8684,6 +8684,9 @@
               "$ref": "#/components/schemas/RequiredAction"
             }
           },
+          "ruleAuthorizationFingerprint": {
+            "$ref": "#/components/schemas/WorkflowFingerprint"
+          },
           "taxonomy": {
             "$ref": "#/components/schemas/TrackerTaxonomy"
           },
@@ -8695,6 +8698,9 @@
           },
           "uploadReleaseName": {
             "type": "string"
+          },
+          "waivableRuleFingerprint": {
+            "$ref": "#/components/schemas/WorkflowFingerprint"
           }
         },
         "required": [

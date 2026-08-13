@@ -447,8 +447,18 @@ func (r *Registry) ProjectRelease(
 			projection.DupeReady = false
 			projection.UploadReady = false
 		} else {
-			ApplyProjectionRuleFailures(&projection, ruleFailures, input.ExecutionMode, input.Logger)
-			if projection.Readiness == api.ReadinessStatusUnknown {
+			if applyErr := ApplyProjectionRuleFailures(
+				&projection,
+				ruleFailures,
+				input.ExecutionMode,
+				input.AuthorizedRuleFingerprint,
+				input.Logger,
+			); applyErr != nil {
+				failure = NewPreparationFailure(input.Tracker, "rules", "tracker projection rule authorization failed", applyErr)
+				projection.Readiness = api.ReadinessStatusBlocked
+				projection.DupeReady = false
+				projection.UploadReady = false
+			} else if projection.Readiness == api.ReadinessStatusUnknown {
 				projection.Readiness = api.ReadinessStatusReady
 				projection.DupeReady = true
 				projection.UploadReady = true
@@ -585,25 +595,49 @@ func duplicatePolicyID(descriptor Descriptor) string {
 	return strings.ToLower(strings.TrimSpace(descriptor.Name)) + "/duplicate/v1"
 }
 
-// ApplyProjectionRuleFailures records validation failures and updates tracker
-// eligibility using the shared execution-mode policy.
+// ApplyProjectionRuleFailures replaces prior rule-derived projection state,
+// fingerprints the current waivable failures, and updates tracker eligibility.
+// Authorization is retained only for an exact fingerprint match. A nil
+// projection is a no-op; fingerprinting failures are returned.
 func ApplyProjectionRuleFailures(
 	projection *api.TrackerReleaseProjection,
 	failures []api.RuleFailure,
 	executionMode api.WorkflowExecutionMode,
+	authorizedFingerprint api.WorkflowFingerprint,
 	logger api.Logger,
-) {
+) error {
 	if projection == nil {
-		return
+		return nil
 	}
+	projection.PolicyDecisions = slices.DeleteFunc(projection.PolicyDecisions, func(decision api.TrackerPolicyDecision) bool {
+		return decision.Disposition != ""
+	})
+	projection.RequiredActions = slices.DeleteFunc(projection.RequiredActions, func(action api.RequiredAction) bool {
+		return action.Kind == api.RequiredActionAuthorizeRules
+	})
+	projection.Failures = slices.DeleteFunc(projection.Failures, func(failure api.WorkflowFailure) bool {
+		return failure.Failure.Code == api.OperationFailureNoEligibleTrackers &&
+			failure.Failure.Operation == api.OperationKindDuplicateCheck
+	})
+	projection.WaivableRuleFingerprint = ""
+	projection.RuleAuthorizationFingerprint = ""
+	waivableFingerprint, err := WaivableRuleFailureFingerprint(string(projection.TrackerID), failures)
+	if err != nil {
+		return err
+	}
+	projection.WaivableRuleFingerprint = waivableFingerprint
+	authorized := waivableFingerprint != "" && authorizedFingerprint == waivableFingerprint
+	if authorized {
+		projection.RuleAuthorizationFingerprint = waivableFingerprint
+	}
+	hasStrict := false
 	for _, failure := range failures {
 		disposition := api.NormalizeRuleDisposition(failure.Disposition)
-		blocking := RuleFailureBlocksExecution(failure, executionMode)
+		blocking := RuleFailureBlocksExecution(failure, executionMode, authorized)
 		decision := string(disposition)
-		if disposition == api.RuleDispositionWaivable && !blocking {
-			decision = "bypassed"
-		}
-		if blocking {
+		switch {
+		case disposition == api.RuleDispositionStrict:
+			hasStrict = true
 			decision = "ineligible"
 			if logger != nil {
 				logger.Warnf(
@@ -612,9 +646,6 @@ func ApplyProjectionRuleFailures(
 					strings.TrimSpace(failure.Rule),
 				)
 			}
-			projection.Readiness = api.ReadinessStatusIneligible
-			projection.DupeReady = false
-			projection.UploadReady = false
 			projection.Failures = append(projection.Failures, api.WorkflowFailure{
 				Failure: api.OperationFailure{
 					Code:      api.OperationFailureNoEligibleTrackers,
@@ -624,6 +655,19 @@ func ApplyProjectionRuleFailures(
 				},
 				TrackerID: projection.TrackerID,
 			})
+		case disposition == api.RuleDispositionWaivable && authorized:
+			decision = "authorized"
+		case disposition == api.RuleDispositionWaivable && !blocking:
+			decision = "bypassed"
+		case disposition == api.RuleDispositionWaivable:
+			decision = "authorization_required"
+			if logger != nil {
+				logger.Warnf(
+					"trackers: projection validation requires authorization tracker=%s rule=%s decision=authorization_required",
+					projection.TrackerID,
+					strings.TrimSpace(failure.Rule),
+				)
+			}
 		}
 		projection.PolicyDecisions = append(projection.PolicyDecisions, api.TrackerPolicyDecision{
 			Code:           strings.TrimSpace(failure.Rule),
@@ -634,4 +678,43 @@ func ApplyProjectionRuleFailures(
 			EvidenceStatus: failure.EvidenceStatus,
 		})
 	}
+	if hasStrict {
+		projection.Readiness = api.ReadinessStatusIneligible
+		projection.DupeReady = false
+		projection.UploadReady = false
+		return nil
+	}
+	if waivableFingerprint != "" && !authorized &&
+		api.NormalizeWorkflowExecutionMode(executionMode) != api.WorkflowExecutionModeDebug {
+		projection.Readiness = api.ReadinessStatusBlocked
+		projection.DupeReady = false
+		projection.UploadReady = false
+		projection.RequiredActions = append(projection.RequiredActions, api.RequiredAction{
+			Kind:      api.RequiredActionAuthorizeRules,
+			TrackerID: projection.TrackerID,
+			Prompt:    waivableRuleAuthorizationPrompt(*projection, failures),
+		})
+	}
+	return nil
+}
+
+func waivableRuleAuthorizationPrompt(projection api.TrackerReleaseProjection, failures []api.RuleFailure) string {
+	details := make([]string, 0, len(failures))
+	for _, failure := range failures {
+		failure = NormalizeRuleFailure(failure)
+		if failure.Disposition != api.RuleDispositionWaivable {
+			continue
+		}
+		detail := failure.Rule
+		if failure.Reason != "" {
+			detail += ": " + failure.Reason
+		}
+		details = append(details, detail)
+	}
+	slices.Sort(details)
+	tracker := strings.TrimSpace(projection.DisplayName)
+	if tracker == "" {
+		tracker = string(projection.TrackerID)
+	}
+	return fmt.Sprintf("%s has waivable rule failures: %s. Continue with this tracker?", tracker, strings.Join(details, "; "))
 }

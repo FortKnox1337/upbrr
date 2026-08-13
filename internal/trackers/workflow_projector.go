@@ -37,13 +37,16 @@ func NewWorkflowProjector(registry *Registry, cfg config.Config, logger api.Logg
 }
 
 // Build creates unstamped snapshot content; the workflow module owns IDs,
-// revisions, lineage refs, timestamps, and publication.
+// revisions, lineage refs, timestamps, and publication. Rule authorizations are
+// tracker-scoped server authority and apply only to an identical freshly
+// evaluated waivable-failure fingerprint.
 func (p *WorkflowProjector) Build(
 	ctx context.Context,
 	release api.ReleaseSnapshot,
 	subject api.UploadSubject,
 	trackerIDs []api.TrackerID,
 	instructions map[api.TrackerID]api.TrackerProjectionInstructions,
+	ruleAuthorizations map[api.TrackerID]api.WorkflowFingerprint,
 	executionMode api.WorkflowExecutionMode,
 ) (
 	api.TrackerCatalogSnapshot,
@@ -83,11 +86,12 @@ func (p *WorkflowProjector) Build(
 			fmt.Errorf("trackers: selection fingerprint: %w", err)
 	}
 	inputFingerprint, err := api.CanonicalWorkflowFingerprint(struct {
-		Release       api.WorkflowFingerprint
-		TrackerIDs    []api.TrackerID
-		Instructions  map[api.TrackerID]api.TrackerProjectionInstructions
-		ExecutionMode api.WorkflowExecutionMode
-	}{release.Fingerprint, selected, instructions, api.NormalizeWorkflowExecutionMode(executionMode)})
+		Release            api.WorkflowFingerprint
+		TrackerIDs         []api.TrackerID
+		Instructions       map[api.TrackerID]api.TrackerProjectionInstructions
+		RuleAuthorizations map[api.TrackerID]api.WorkflowFingerprint
+		ExecutionMode      api.WorkflowExecutionMode
+	}{release.Fingerprint, selected, instructions, ruleAuthorizations, api.NormalizeWorkflowExecutionMode(executionMode)})
 	if err != nil {
 		return api.TrackerCatalogSnapshot{}, api.TrackerRuntimeSnapshot{}, api.TrackerSelection{}, api.TrackerReleaseProjectionSet{},
 			fmt.Errorf("trackers: projection input fingerprint: %w", err)
@@ -97,6 +101,7 @@ func (p *WorkflowProjector) Build(
 		subject,
 		selected,
 		instructions,
+		ruleAuthorizations,
 		inputFingerprint,
 		catalog.Fingerprint,
 		configFingerprints,
@@ -206,6 +211,7 @@ func (p *WorkflowProjector) projectSelected(
 	subject api.UploadSubject,
 	selected []api.TrackerID,
 	instructions map[api.TrackerID]api.TrackerProjectionInstructions,
+	ruleAuthorizations map[api.TrackerID]api.WorkflowFingerprint,
 	inputFingerprint api.WorkflowFingerprint,
 	catalogFingerprint api.WorkflowFingerprint,
 	configFingerprints map[api.TrackerID]api.WorkflowFingerprint,
@@ -233,14 +239,15 @@ func (p *WorkflowProjector) projectSelected(
 		applyQuestionnaireInstruction(&trackerSubject, trackerID, instruction)
 		requestedName := projectionRequestedUploadName(instruction)
 		projection, failure := p.registry.ProjectRelease(ctx, PreparationInput{
-			ExecutionMode:          executionMode,
-			Tracker:                string(trackerID),
-			Meta:                   trackerSubject,
-			RequestedUploadName:    requestedName,
-			AdditionalReleaseNames: projectionAdditionalNames(instruction),
-			TrackerConfig:          applyTrackerConfigOverrides(trackerConfigFor(p.config, string(trackerID)), instruction.TrackerConfig),
-			Runtime:                PreparationRuntimeFromConfig(p.config),
-			Logger:                 p.logger,
+			ExecutionMode:             executionMode,
+			Tracker:                   string(trackerID),
+			Meta:                      trackerSubject,
+			RequestedUploadName:       requestedName,
+			AdditionalReleaseNames:    projectionAdditionalNames(instruction),
+			AuthorizedRuleFingerprint: ruleAuthorizations[trackerID],
+			TrackerConfig:             applyTrackerConfigOverrides(trackerConfigFor(p.config, string(trackerID)), instruction.TrackerConfig),
+			Runtime:                   PreparationRuntimeFromConfig(p.config),
+			Logger:                    p.logger,
 		}, inputFingerprint, catalogFingerprint, configFingerprints[trackerID])
 		if descriptor, ok := p.registry.LookupDescriptor(string(trackerID)); ok {
 			applyWorkflowProjectionRequirements(&projection, descriptor, subject, p.config)
@@ -259,7 +266,10 @@ func (p *WorkflowProjector) projectSelected(
 		projections = append(projections, projection)
 		itemStatus := api.StageStatusCompleted
 		message := "Tracker projection complete."
-		if projection.Readiness != api.ReadinessStatusReady || !projection.DupeReady {
+		if len(projection.RequiredActions) > 0 {
+			itemStatus = api.StageStatusBlocked
+			message = strings.TrimSpace(projection.RequiredActions[0].Prompt)
+		} else if projection.Readiness != api.ReadinessStatusReady || !projection.DupeReady {
 			itemStatus = api.StageStatusSkipped
 			message = projectionIneligibleProgressMessage(projection)
 		}

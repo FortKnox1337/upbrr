@@ -2085,10 +2085,12 @@ export type TrackerReleaseProjection = Readonly<{
   questionnaire?: readonly TrackerQuestionnaireRequirement[];
   readiness: ReadinessStatus;
   requiredActions?: readonly RequiredAction[];
+  ruleAuthorizationFingerprint?: WorkflowFingerprint;
   taxonomy: TrackerTaxonomy;
   trackerId: TrackerID;
   uploadReady: boolean;
   uploadReleaseName: string;
+  waivableRuleFingerprint?: WorkflowFingerprint;
 }>;
 
 export type TrackerReleaseProjectionSet = Readonly<{

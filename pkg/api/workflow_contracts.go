@@ -275,25 +275,31 @@ type TrackerReleaseProjection struct {
 	NamingElementPolicyVersion string `json:"namingElementPolicyVersion"`
 	// EpisodeTitleMode records the normalized structural decision included in
 	// NamingFingerprint.
-	EpisodeTitleMode            EpisodeTitleMode                  `json:"episodeTitleMode"`
-	NamingFingerprint           WorkflowFingerprint               `json:"namingFingerprint"`
-	PolicyDecisions             []TrackerPolicyDecision           `json:"policyDecisions,omitempty"`
-	Artifacts                   TrackerArtifactRequirements       `json:"artifacts"`
-	DescriptionGroup            string                            `json:"descriptionGroup,omitempty"`
-	MetadataLocale              string                            `json:"metadataLocale,omitempty"`
-	Questionnaire               []TrackerQuestionnaireRequirement `json:"questionnaire,omitempty"`
-	DerivedFlags                []TrackerDerivedFlag              `json:"derivedFlags,omitempty"`
-	InputFingerprint            WorkflowFingerprint               `json:"inputFingerprint"`
-	CatalogFingerprint          WorkflowFingerprint               `json:"catalogFingerprint"`
-	ConfigFingerprint           WorkflowFingerprint               `json:"configFingerprint"`
-	ProjectorFingerprint        WorkflowFingerprint               `json:"projectorFingerprint"`
-	CriteriaFingerprint         WorkflowFingerprint               `json:"criteriaFingerprint"`
-	PreparedResourceFingerprint WorkflowFingerprint               `json:"preparedResourceFingerprint,omitempty"`
-	Readiness                   ReadinessStatus                   `json:"readiness"`
-	DupeReady                   bool                              `json:"dupeReady"`
-	UploadReady                 bool                              `json:"uploadReady"`
-	RequiredActions             []RequiredAction                  `json:"requiredActions,omitempty"`
-	Failures                    []WorkflowFailure                 `json:"failures,omitempty"`
+	EpisodeTitleMode  EpisodeTitleMode        `json:"episodeTitleMode"`
+	NamingFingerprint WorkflowFingerprint     `json:"namingFingerprint"`
+	PolicyDecisions   []TrackerPolicyDecision `json:"policyDecisions,omitempty"`
+	// WaivableRuleFingerprint identifies the normalized, tracker-local current set
+	// of waivable failures. It is empty when no waiver is required.
+	WaivableRuleFingerprint WorkflowFingerprint `json:"waivableRuleFingerprint,omitempty"`
+	// RuleAuthorizationFingerprint records exact user authorization and is valid
+	// only while it matches WaivableRuleFingerprint.
+	RuleAuthorizationFingerprint WorkflowFingerprint               `json:"ruleAuthorizationFingerprint,omitempty"`
+	Artifacts                    TrackerArtifactRequirements       `json:"artifacts"`
+	DescriptionGroup             string                            `json:"descriptionGroup,omitempty"`
+	MetadataLocale               string                            `json:"metadataLocale,omitempty"`
+	Questionnaire                []TrackerQuestionnaireRequirement `json:"questionnaire,omitempty"`
+	DerivedFlags                 []TrackerDerivedFlag              `json:"derivedFlags,omitempty"`
+	InputFingerprint             WorkflowFingerprint               `json:"inputFingerprint"`
+	CatalogFingerprint           WorkflowFingerprint               `json:"catalogFingerprint"`
+	ConfigFingerprint            WorkflowFingerprint               `json:"configFingerprint"`
+	ProjectorFingerprint         WorkflowFingerprint               `json:"projectorFingerprint"`
+	CriteriaFingerprint          WorkflowFingerprint               `json:"criteriaFingerprint"`
+	PreparedResourceFingerprint  WorkflowFingerprint               `json:"preparedResourceFingerprint,omitempty"`
+	Readiness                    ReadinessStatus                   `json:"readiness"`
+	DupeReady                    bool                              `json:"dupeReady"`
+	UploadReady                  bool                              `json:"uploadReady"`
+	RequiredActions              []RequiredAction                  `json:"requiredActions,omitempty"`
+	Failures                     []WorkflowFailure                 `json:"failures,omitempty"`
 }
 
 // TrackerReleaseProjectionSet is an immutable projection for every selected tracker.
