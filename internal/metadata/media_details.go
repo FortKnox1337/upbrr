@@ -34,6 +34,8 @@ var repackPattern = regexp.MustCompile(`(?i)\b(?:REPACK\d?|RERIP|PROPER\d?|V[2-4
 var editionWordPattern = regexp.MustCompile(`(?i)\bedition\b`)
 var editionBadTokenPattern = regexp.MustCompile(`(?i)\b(?:internal|limited|retail|version|remastered)\b`)
 var editionWhitespacePattern = regexp.MustCompile(`\s+`)
+var mediaInfoCRFPattern = regexp.MustCompile(`(?i)(?:^|[ /])crf\s*=\s*([0-9]+(?:\.[0-9]+)?)`)
+var mediaInfoCRFMarkerPattern = regexp.MustCompile(`(?i)(?:^|[ /])crf\s*=`)
 var durationTokenPattern = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(milliseconds?|msecs?|ms|hours?|hrs?|h|minutes?|mins?|min|seconds?|secs?|sec|s)\b`)
 var numericPattern = regexp.MustCompile(`\d+`)
 var releaseTokenSeparatorPattern = regexp.MustCompile(`[^A-Z0-9]+`)
@@ -94,6 +96,27 @@ func videoBitrateAssessment(doc mediaInfoDoc) api.VideoBitrateAssessment {
 	return api.VideoBitrateAssessment{Status: api.VideoBitrateStatusPresent, BitsPerSecond: video}
 }
 
+func videoCRFAssessment(doc mediaInfoDoc) api.VideoCRFAssessment {
+	_, videoTracks, _ := splitMediaInfoTracks(doc)
+	for _, track := range videoTracks {
+		settings := trackString(track, "Encoded_Library_Settings")
+		if settings == "" {
+			continue
+		}
+		match := mediaInfoCRFPattern.FindStringSubmatch(settings)
+		if len(match) > 1 {
+			value, err := strconv.ParseFloat(match[1], 64)
+			if err == nil {
+				return api.VideoCRFAssessment{Status: api.VideoCRFStatusPresent, Value: value}
+			}
+		}
+		if mediaInfoCRFMarkerPattern.MatchString(settings) {
+			return api.VideoCRFAssessment{Status: api.VideoCRFStatusInvalid}
+		}
+	}
+	return api.VideoCRFAssessment{Status: api.VideoCRFStatusUnavailable}
+}
+
 // deriveMediaFacts enriches prepared evidence from MediaInfo, BDInfo, and filename
 // tokens, overrides, and tracker rules, then rebuilds the release name.
 func (s *Service) deriveMediaFacts(ctx context.Context, meta preparationstate.State) (preparationstate.State, error) {
@@ -110,6 +133,7 @@ func (s *Service) deriveMediaFacts(ctx context.Context, meta preparationstate.St
 
 	meta.MediaInfoUniqueID, meta.MediaInfoUniqueIDPresent = validateMediaInfoUniqueID(meta, miDoc)
 	meta.VideoBitrate = videoBitrateAssessment(miDoc)
+	meta.VideoCRF = videoCRFAssessment(miDoc)
 	if !meta.MediaInfoUniqueIDPresent && s.logger != nil {
 		s.logger.Warnf("metadata: mediainfo validation failed (missing unique id)")
 	}

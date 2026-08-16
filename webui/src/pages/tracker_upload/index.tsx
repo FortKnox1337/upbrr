@@ -307,6 +307,9 @@ export default function TrackerUploadPage({ facet }: Props) {
                 {" · "}
                 Client injection: {result.clientInjectionStatus || "unavailable"}
                 {result.clientInjectionMessage ? ` · ${result.clientInjectionMessage}` : ""}
+                {result.submissionFeedback?.length
+                  ? ` · ${result.submissionFeedback.join(" · ")}`
+                  : ""}
               </span>
               {result.failures
                 ?.filter((failure) => failure.failure.Message !== result.clientInjectionMessage)

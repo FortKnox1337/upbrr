@@ -48,13 +48,23 @@ func (testDefinition) Prepare(context.Context, trackers.PreparationInput) (track
 }
 
 func testUnit3DRegistry(t *testing.T, name string, baseURL string) *trackers.Registry {
+	return testUnit3DRegistryWithPolicy(t, name, baseURL, nil)
+}
+
+func testUnit3DRegistryWithPolicy(
+	t *testing.T,
+	name string,
+	baseURL string,
+	policy *trackers.APIKeyTransportPolicy,
+) *trackers.Registry {
 	t.Helper()
 	registry := trackers.NewRegistry()
 	if err := registry.RegisterDescriptor(trackers.Descriptor{
-		Name:       name,
-		Family:     trackers.FamilyUnit3D,
-		BaseURL:    baseURL,
-		Definition: testDefinition{name: name},
+		Name:            name,
+		Family:          trackers.FamilyUnit3D,
+		BaseURL:         baseURL,
+		Definition:      testDefinition{name: name},
+		APIKeyTransport: policy,
 	}); err != nil {
 		t.Fatalf("register test tracker: %v", err)
 	}
@@ -78,6 +88,22 @@ func TestSetUnit3DAPIHeadersUsesBearerAuthorization(t *testing.T) {
 	}
 	if req.URL.Query().Has("api_token") {
 		t.Fatal("Unit3D API token must not be placed in the query")
+	}
+}
+
+func TestSetUnit3DAPIAuthenticationUsesQueryToken(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://tracker.example/api/torrents/filter?tmdbId=123", nil)
+	SetUnit3DAPIAuthentication(req, " secret ", trackers.APIKeyTransportPolicy{
+		QueryParameter: "api_token",
+		DisableBearer:  true,
+	})
+	if req.URL.Query().Get("api_token") != "secret" || req.URL.Query().Get("tmdbId") != "123" {
+		t.Fatalf("request query = %q", req.URL.RawQuery)
+	}
+	if req.Header.Get("Authorization") != "" {
+		t.Fatal("query-token transport must not also send bearer authorization")
 	}
 }
 
@@ -123,7 +149,7 @@ func TestExtractAttributesFromDataAndTopLevel(t *testing.T) {
 	t.Parallel()
 
 	resp := unit3dResponse{
-		Data: json.RawMessage(`[{"attributes":{"tmdb_id":12,"imdb_id":34,"tvdb_id":56,"mal_id":78,"description":"desc"}}]`),
+		Data: json.RawMessage(`[{"attributes":{"tmdb_id":"12","imdb_id":"34","tvdb_id":"56","mal_id":"78","description":"desc"}}]`),
 	}
 	attrs := resp.extractAttributes(false)
 	if attrs == nil || attrs.tmdbID != 12 || attrs.imdbID != 34 || attrs.tvdbID != 56 || attrs.malID != 78 {
@@ -255,6 +281,27 @@ func TestSearchTorrentsCBRIncludesPendingAndFiltersTMDB(t *testing.T) {
 	}
 	if entries[1].ID != "202" || entries[1].SizeBytes != 456 || entries[1].Files[0] != "pending.mkv" {
 		t.Fatalf("unexpected pending fields: %#v", entries[1])
+	}
+}
+
+func TestSearchTorrentsAcceptsNumericInternalFlag(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(
+			`{"data":[{"id":1,"attributes":{"name":"Example.Release.2026.1080p.BluRay.REMUX-GRP","internal":1,"tmdb_id":"123456"}}],"meta":{"current_page":1,"last_page":1,"total":1}}`,
+		))
+	}))
+	t.Cleanup(server.Close)
+
+	client := newUnit3DSearchTestClient(t, server)
+	result, err := client.SearchTorrentsWithEvidence(context.Background(), "AITHER", url.Values{"tmdbId": []string{"123456"}}, false)
+	if err != nil {
+		t.Fatalf("search torrents: %v", err)
+	}
+	if len(result.Entries) != 1 || !result.Entries[0].Internal {
+		t.Fatalf("numeric internal flag result = %#v", result)
 	}
 }
 
@@ -486,6 +533,40 @@ func TestTorrentInfoUsesBearerAuthorization(t *testing.T) {
 	}, api.NopLogger{}, &http.Client{Transport: rewriteHostTransport{base: base, rt: server.Client().Transport}}, testUnit3DRegistry(t, "AITHER", "https://aither.cc"))
 
 	result, err := client.TorrentInfo(context.Background(), "AITHER", "123", "", true, false)
+	if err != nil {
+		t.Fatalf("torrent info: %v", err)
+	}
+	if result.TMDBID != 123 || result.Category != "MOVIE" {
+		t.Fatalf("unexpected Unit3D lookup result: %#v", result)
+	}
+}
+
+func TestTorrentInfoUsesRegisteredQueryTokenPolicy(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Query().Get("api_token") != "secret" || request.Header.Get("Authorization") != "" {
+			t.Error("unexpected API authentication transport")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"attributes":{"tmdb_id":123,"category":"MOVIE"}}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	base, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal("parse test server URL")
+	}
+	policy := &trackers.APIKeyTransportPolicy{QueryParameter: "api_token", DisableBearer: true}
+	client := NewClientWithRegistry(config.Config{
+		Trackers: config.TrackersConfig{Trackers: map[string]config.TrackerConfig{
+			"HUNO": {APIKey: "secret"},
+		}},
+	}, api.NopLogger{}, &http.Client{Transport: rewriteHostTransport{base: base, rt: server.Client().Transport}},
+		testUnit3DRegistryWithPolicy(t, "HUNO", "https://hawke.uno", policy))
+
+	result, err := client.TorrentInfo(context.Background(), "HUNO", "123", "", true, false)
 	if err != nil {
 		t.Fatalf("torrent info: %v", err)
 	}

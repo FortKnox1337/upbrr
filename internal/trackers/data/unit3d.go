@@ -276,7 +276,7 @@ func (c *Client) lookupUnit3D(ctx context.Context, tracker string, id string, fi
 	if len(params) > 0 {
 		req.URL.RawQuery = params.Encode()
 	}
-	SetUnit3DAPIHeaders(req, apiKey)
+	SetUnit3DAPIAuthentication(req, apiKey, c.unit3DAPIKeyTransport(tracker))
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -508,7 +508,7 @@ func (c *Client) searchUnit3DEndpoint(
 			return unit3dEndpointSearchResult{}, fmt.Errorf("unit3d: request: %w", err)
 		}
 		req.URL.RawQuery = pageParams.Encode()
-		SetUnit3DAPIHeaders(req, apiKey)
+		SetUnit3DAPIAuthentication(req, apiKey, c.unit3DAPIKeyTransport(tracker))
 
 		resp, err := c.http.Do(req)
 		if err != nil {
@@ -622,21 +622,44 @@ func cloneURLValues(values url.Values) url.Values {
 // SetUnit3DAPIHeaders applies the client identification, JSON response format,
 // and optional bearer authentication expected by every Unit3D API request.
 func SetUnit3DAPIHeaders(req *http.Request, apiKey string) {
+	SetUnit3DAPIAuthentication(req, apiKey, trackers.APIKeyTransportPolicy{})
+}
+
+// SetUnit3DAPIAuthentication applies standard Unit3D headers and the selected
+// bearer or query-parameter API credential transport.
+func SetUnit3DAPIAuthentication(req *http.Request, apiKey string, policy trackers.APIKeyTransportPolicy) {
 	if req == nil {
 		return
 	}
 	req.Header.Set("User-Agent", unit3DUserAgent)
 	req.Header.Set("Accept", "application/json")
 	if apiKey = strings.TrimSpace(apiKey); apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+		queryParameter := strings.TrimSpace(policy.QueryParameter)
+		if queryParameter != "" && req.URL != nil {
+			query := req.URL.Query()
+			query.Set(queryParameter, apiKey)
+			req.URL.RawQuery = query.Encode()
+		}
+		if !policy.DisableBearer {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
 	}
+}
+
+func (c *Client) unit3DAPIKeyTransport(tracker string) trackers.APIKeyTransportPolicy {
+	if c == nil || c.registry == nil {
+		return trackers.APIKeyTransportPolicy{}
+	}
+	policy, _ := c.registry.LookupAPIKeyTransportPolicy(tracker)
+	return policy
 }
 
 func buildUnit3DSearchEntries(items []unit3dSearchItem, filterTMDBID int, isDisc bool) ([]api.DupeEntry, int) {
 	entries := make([]api.DupeEntry, 0, len(items))
 	wrongWorkCount := 0
 	for _, item := range items {
-		if filterTMDBID > 0 && item.Attributes.TMDBID > 0 && item.Attributes.TMDBID != filterTMDBID {
+		itemTMDBID := int(item.Attributes.TMDBID)
+		if filterTMDBID > 0 && itemTMDBID > 0 && itemTMDBID != filterTMDBID {
 			wrongWorkCount++
 			continue
 		}
@@ -650,7 +673,7 @@ func buildUnit3DSearchEntries(items []unit3dSearchItem, filterTMDBID int, isDisc
 			Type:          rawType,
 			CanonicalType: CanonicalUnit3DType(rawType),
 			Res:           strings.TrimSpace(item.Attributes.Resolution),
-			Internal:      item.Attributes.Internal,
+			Internal:      bool(item.Attributes.Internal),
 			BDInfo:        strings.TrimSpace(item.Attributes.BDInfo),
 			Description:   strings.TrimSpace(item.Attributes.Description),
 			HDR:           mediafacts.HDRFromMediaInfoText(item.Attributes.MediaInfo),
@@ -686,7 +709,8 @@ func buildUnit3DPendingEntries(items []unit3dPendingSearchItem, endpoint unit3dS
 	entries := make([]api.DupeEntry, 0, len(items))
 	wrongWorkCount := 0
 	for _, item := range items {
-		if endpoint.filterTMDBID > 0 && item.TMDBID > 0 && item.TMDBID != endpoint.filterTMDBID {
+		itemTMDBID := int(item.TMDBID)
+		if endpoint.filterTMDBID > 0 && itemTMDBID > 0 && itemTMDBID != endpoint.filterTMDBID {
 			wrongWorkCount++
 			continue
 		}
@@ -701,7 +725,7 @@ func buildUnit3DPendingEntries(items []unit3dPendingSearchItem, endpoint unit3dS
 			Type:          rawType,
 			CanonicalType: CanonicalUnit3DType(rawType),
 			Res:           strings.TrimSpace(item.Resolution),
-			Internal:      item.Internal,
+			Internal:      bool(item.Internal),
 			BDInfo:        strings.TrimSpace(item.BDInfo),
 			Description:   strings.TrimSpace(item.Description),
 			HDR:           mediafacts.HDRFromMediaInfoText(item.MediaInfo),
@@ -1041,10 +1065,10 @@ type unit3dDataItem struct {
 type unit3dAttributes struct {
 	Category      string         `json:"category"`
 	Description   string         `json:"description"`
-	TMDBID        int            `json:"tmdb_id"`
-	IMDBID        int            `json:"imdb_id"`
-	TVDBID        int            `json:"tvdb_id"`
-	MALID         int            `json:"mal_id"`
+	TMDBID        unit3dID       `json:"tmdb_id"`
+	IMDBID        unit3dID       `json:"imdb_id"`
+	TVDBID        unit3dID       `json:"tvdb_id"`
+	MALID         unit3dID       `json:"mal_id"`
 	InfoHash      string         `json:"info_hash"`
 	Files         []unit3dFile   `json:"files"`
 	RegionID      int            `json:"region_id"`
@@ -1101,10 +1125,10 @@ func parseAttributes(attrs unit3dAttributes) *parsedAttributes {
 		description: attrs.Description,
 		infoHash:    attrs.InfoHash,
 	}
-	info.tmdbID = normalizeID(attrs.TMDBID)
-	info.imdbID = normalizeID(attrs.IMDBID)
-	info.tvdbID = normalizeID(attrs.TVDBID)
-	info.malID = normalizeID(attrs.MALID)
+	info.tmdbID = normalizeID(int(attrs.TMDBID))
+	info.imdbID = normalizeID(int(attrs.IMDBID))
+	info.tvdbID = normalizeID(int(attrs.TVDBID))
+	info.malID = normalizeID(int(attrs.MALID))
 
 	fileNames := make([]string, 0, len(attrs.Files))
 	for _, file := range attrs.Files {
@@ -1158,6 +1182,58 @@ type unit3dSearchItem struct {
 	Attributes unit3dSearchAttrs `json:"attributes"`
 }
 
+// unit3dID accepts provider IDs encoded as either JSON integers or quoted
+// numeric strings. Empty and null values preserve the standard zero value.
+type unit3dID int
+
+func (value *unit3dID) UnmarshalJSON(data []byte) error {
+	if value == nil {
+		return errors.New("unit3d ID: nil receiver")
+	}
+	text := strings.TrimSpace(string(data))
+	if text == "null" {
+		*value = 0
+		return nil
+	}
+	if strings.HasPrefix(text, `"`) {
+		var quoted string
+		if err := json.Unmarshal(data, &quoted); err != nil {
+			return errors.New("unit3d ID: invalid quoted value")
+		}
+		text = strings.TrimSpace(quoted)
+		if text == "" {
+			*value = 0
+			return nil
+		}
+	}
+	parsed, err := strconv.Atoi(text)
+	if err != nil {
+		return errors.New("unit3d ID: expected an integer number or numeric string")
+	}
+	*value = unit3dID(parsed)
+	return nil
+}
+
+// unit3dBool accepts the boolean and integer flag representations returned by
+// different Unit3D API versions.
+type unit3dBool bool
+
+func (value *unit3dBool) UnmarshalJSON(data []byte) error {
+	if value == nil {
+		return errors.New("unit3d boolean: nil receiver")
+	}
+	switch strings.TrimSpace(string(data)) {
+	case "true", "1":
+		*value = true
+		return nil
+	case "false", "0", "null":
+		*value = false
+		return nil
+	default:
+		return errors.New("unit3d boolean: expected true, false, 0, or 1")
+	}
+}
+
 type unit3dSearchAttrs struct {
 	Name         string       `json:"name"`
 	Size         json.Number  `json:"size"`
@@ -1167,11 +1243,11 @@ type unit3dSearchAttrs struct {
 	DownloadLink string       `json:"download_link"`
 	Type         string       `json:"type"`
 	Resolution   string       `json:"resolution"`
-	Internal     bool         `json:"internal"`
+	Internal     unit3dBool   `json:"internal"`
 	BDInfo       string       `json:"bd_info"`
 	MediaInfo    string       `json:"media_info"`
 	Description  string       `json:"description"`
-	TMDBID       int          `json:"tmdb_id"`
+	TMDBID       unit3dID     `json:"tmdb_id"`
 }
 
 type unit3dPendingSearchResponse struct {
@@ -1180,7 +1256,7 @@ type unit3dPendingSearchResponse struct {
 
 type unit3dPendingSearchItem struct {
 	ID           json.Number  `json:"id"`
-	TMDBID       int          `json:"tmdb_id"`
+	TMDBID       unit3dID     `json:"tmdb_id"`
 	Name         string       `json:"name"`
 	Size         json.Number  `json:"size"`
 	Files        []unit3dFile `json:"files"`
@@ -1188,7 +1264,7 @@ type unit3dPendingSearchItem struct {
 	DownloadLink string       `json:"download_link"`
 	Type         string       `json:"type"`
 	Resolution   string       `json:"resolution"`
-	Internal     bool         `json:"internal"`
+	Internal     unit3dBool   `json:"internal"`
 	BDInfo       string       `json:"bd_info"`
 	MediaInfo    string       `json:"mediainfo"`
 	Description  string       `json:"description"`

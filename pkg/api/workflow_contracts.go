@@ -668,6 +668,7 @@ type UploadTrackerResult struct {
 	ClientFailureCode      OperationFailureCode `json:"clientFailureCode,omitempty"`
 	RemoteID               string               `json:"remoteId,omitempty"`
 	RemoteURL              string               `json:"remoteUrl,omitempty"`
+	SubmissionFeedback     []string             `json:"submissionFeedback,omitempty"`
 	ClientInjected         bool                 `json:"clientInjected"`
 	CrossSeeded            bool                 `json:"crossSeeded"`
 	Failures               []WorkflowFailure    `json:"failures,omitempty"`

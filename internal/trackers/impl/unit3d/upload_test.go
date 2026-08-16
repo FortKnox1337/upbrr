@@ -6,11 +6,15 @@ package unit3d
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -434,6 +438,63 @@ func TestBuildUnit3DDryRunBlocksMissingCanonicalTVSeasonEpisode(t *testing.T) {
 	}
 }
 
+func TestBuildUnit3DDryRunCanOmitOptionalNFO(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	mediaInfoPath := filepath.Join(tempDir, "mediainfo.txt")
+	torrentPath := filepath.Join(tempDir, "movie.torrent")
+	nfoPath := filepath.Join(tempDir, "movie.nfo")
+	for path, payload := range map[string]string{
+		mediaInfoPath: "General\nComplete name: movie",
+		torrentPath:   "d8:announce13:https://x.ee",
+		nfoPath:       "synthetic scene nfo",
+	} {
+		if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+			t.Fatalf("write fixture %s: %v", filepath.Base(path), err)
+		}
+	}
+	req := trackers.PreparationInput{
+		Tracker:       "HUNO",
+		TrackerConfig: config.TrackerConfig{APIKey: "test-key"},
+		Meta: api.UploadSubject{
+			ReleaseName:       "Example.Movie.2026.1080p.WEB-DL-GRP",
+			TorrentPath:       torrentPath,
+			MediaInfoTextPath: mediaInfoPath,
+			SceneNFOPath:      nfoPath,
+			Assessments:       api.ReleaseAssessments{MediaInfoEncodeSettings: api.EncodeSettingsStatusPresent},
+			Identity:          api.ExternalIdentity{Category: "MOVIE", TMDBID: 123},
+			Type:              "WEBDL",
+			Release: api.ReleaseInfo{
+				Category:   "MOVIE",
+				Resolution: "1080p",
+			},
+		},
+		Assets: &trackers.DescriptionAssets{Description: "description", Final: true},
+	}
+
+	withNFO, err := buildUploadDryRunUnit3D(context.Background(), req, "https://tracker.example")
+	if err != nil {
+		t.Fatalf("build generic Unit3D dry-run: %v", err)
+	}
+	if preparedFilePath(withNFO.Files, "nfo") != nfoPath {
+		t.Fatalf("generic Unit3D NFO file = %#v", withNFO.Files)
+	}
+
+	withoutNFO, err := buildUploadDryRunUnit3D(
+		context.Background(),
+		req,
+		"https://tracker.example",
+		SiteProfile{OmitNFO: true},
+	)
+	if err != nil {
+		t.Fatalf("build NFO-free Unit3D dry-run: %v", err)
+	}
+	if preparedFilePath(withoutNFO.Files, "nfo") != "" {
+		t.Fatalf("NFO-free Unit3D files = %#v", withoutNFO.Files)
+	}
+}
+
 func TestUploadUnit3DBlocksMissingCanonicalTVSeasonEpisode(t *testing.T) {
 	tempDir := t.TempDir()
 	mediaInfoPath := filepath.Join(tempDir, "mediainfo.txt")
@@ -727,6 +788,52 @@ func TestParseUnit3DUploadArtifactNumericID(t *testing.T) {
 	}
 }
 
+func TestUnit3DUploadArtifactDataExtractsNestedTorrent(t *testing.T) {
+	t.Parallel()
+
+	raw := json.RawMessage(`{
+		"torrent": {
+			"id": 374352,
+			"download_link": "/torrent/download/374352.382"
+		},
+		"moderation_status": "approved",
+		"warnings": [],
+		"name_issues": []
+	}`)
+	if got := unit3DUploadArtifactData(raw); got != "/torrent/download/374352.382" {
+		t.Fatalf("nested upload artifact data = %q", got)
+	}
+}
+
+func TestUnit3DUploadArtifactDataFallsBackToNestedTorrentID(t *testing.T) {
+	t.Parallel()
+
+	raw := json.RawMessage(`{"torrent":{"id":"374352"},"moderation_status":"pending"}`)
+	if got := unit3DUploadArtifactData(raw); got != "374352" {
+		t.Fatalf("nested upload artifact ID = %q", got)
+	}
+}
+
+func TestUnit3DUploadFeedbackCapturesHUNOStatusWarningsAndNameIssues(t *testing.T) {
+	t.Parallel()
+
+	feedback := parseUnit3DUploadFeedback(json.RawMessage(`{
+		"moderation_status":"pending",
+		"warnings":["Audio will be reviewed."],
+		"name_issues":["Release name was normalized."]
+	}`))
+	got := formatUnit3DUploadFeedback("Torrent uploaded successfully.", feedback)
+	want := []string{
+		"Torrent uploaded successfully.",
+		"Moderation status: pending",
+		"Warning: Audio will be reviewed.",
+		"Name issue: Release name was normalized.",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("upload feedback = %#v; want %#v", got, want)
+	}
+}
+
 func TestParseUnit3DUploadArtifactRejectsOffOriginDownloadURL(t *testing.T) {
 	t.Parallel()
 
@@ -798,6 +905,99 @@ func TestSubmitUnit3DUploadDownloadsRegisteredTorrentWithAPIAuth(t *testing.T) {
 	}
 	if !bytes.Equal(persisted, registeredTorrent) {
 		t.Fatal("Unit3D registered torrent bytes changed")
+	}
+}
+
+func TestSubmitUnit3DUploadAcceptsObjectDataAndUsesQueryToken(t *testing.T) {
+	t.Parallel()
+
+	var requestAccepted atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/torrents/upload" {
+			http.NotFound(w, request)
+			return
+		}
+		requestAccepted.Store(
+			request.URL.Query().Get("api_token") == "synthetic-api-key" &&
+				request.Header.Get("Authorization") == "",
+		)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"message":"queued","data":{"moderation_status":"pending","warnings":[]}}`))
+	}))
+	defer server.Close()
+
+	summary, err := submitUnit3DUpload(
+		context.Background(),
+		"EXAMPLE",
+		"Example.Release.2026.1080p-GRP",
+		"synthetic-api-key",
+		server.URL,
+		server.URL+"/api/torrents/upload",
+		"application/json",
+		"{}",
+		api.UploadSubject{},
+		"",
+		api.NopLogger{},
+		trackers.APIKeyTransportPolicy{QueryParameter: "api_token", DisableBearer: true},
+	)
+	if err != nil {
+		t.Fatalf("submit Unit3D query-token upload: %v", err)
+	}
+	if !requestAccepted.Load() {
+		t.Fatal("query-token upload request did not use the selected API transport")
+	}
+	if summary.Uploaded != 1 || len(summary.UploadedTorrents) != 1 || summary.UploadedTorrents[0].DownloadURL != "" {
+		t.Fatalf("query-token upload summary = %#v", summary)
+	}
+	if want := []string{"queued", "Moderation status: pending"}; !slices.Equal(summary.SubmissionFeedback, want) {
+		t.Fatalf("query-token upload feedback = %#v; want %#v", summary.SubmissionFeedback, want)
+	}
+}
+
+func TestBuildMultipartPayloadAttachesConfiguredTextFiles(t *testing.T) {
+	t.Parallel()
+
+	torrentPath := filepath.Join(t.TempDir(), "Example.Release.2026.torrent")
+	if err := os.WriteFile(torrentPath, []byte("synthetic torrent"), 0o600); err != nil {
+		t.Fatalf("write torrent: %v", err)
+	}
+	payload, contentType, err := buildMultipartPayload(map[string]string{
+		"name":        "Example.Release.2026.1080p-GRP",
+		"description": "synthetic description",
+		"mediainfo":   "synthetic mediainfo",
+		"bdinfo":      "",
+	}, torrentPath, "", "Example.Release.2026.1080p-GRP", api.NopLogger{}, SiteProfile{MultipartFiles: MultipartFileProfile{
+		DescriptionFilename: "description.txt",
+		MediaInfoFilename:   "mediainfo.txt",
+		BDInfoFilename:      "bdinfo.txt",
+		TorrentFromName:     true,
+	}})
+	if err != nil {
+		t.Fatalf("build multipart payload: %v", err)
+	}
+	_, parameters, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		t.Fatalf("parse multipart content type: %v", err)
+	}
+	form, err := multipart.NewReader(strings.NewReader(payload), parameters["boundary"]).ReadForm(1 << 20)
+	if err != nil {
+		t.Fatalf("read multipart form: %v", err)
+	}
+	defer func() { _ = form.RemoveAll() }()
+	if len(form.Value["description"]) != 0 || len(form.Value["mediainfo"]) != 0 {
+		t.Fatal("configured text files were also emitted as form fields")
+	}
+	if len(form.File["description"]) != 1 || form.File["description"][0].Filename != "description.txt" {
+		t.Fatalf("description file = %#v", form.File["description"])
+	}
+	if len(form.File["mediainfo"]) != 1 || form.File["mediainfo"][0].Filename != "mediainfo.txt" {
+		t.Fatalf("mediainfo file = %#v", form.File["mediainfo"])
+	}
+	if len(form.File["bdinfo"]) != 0 {
+		t.Fatal("empty BDInfo should not produce a multipart file")
+	}
+	if len(form.File["torrent"]) != 1 || form.File["torrent"][0].Filename != "Example.Release.2026.1080p-GRP.torrent" {
+		t.Fatalf("torrent file = %#v", form.File["torrent"])
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/autobrr/upbrr/internal/logging"
 	"github.com/autobrr/upbrr/internal/providerid"
 	"github.com/autobrr/upbrr/internal/redaction"
 	"github.com/autobrr/upbrr/internal/trackers"
@@ -27,9 +28,93 @@ import (
 )
 
 type unit3dUploadResponse struct {
-	Success bool   `json:"success"`
-	Message string `json:"message"`
-	Data    string `json:"data"`
+	Success bool            `json:"success"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data"`
+}
+
+type unit3dUploadFeedback struct {
+	ModerationStatus string
+	Warnings         []string
+	NameIssues       []string
+}
+
+func parseUnit3DUploadFeedback(raw json.RawMessage) unit3dUploadFeedback {
+	var data map[string]json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &data) != nil {
+		return unit3dUploadFeedback{}
+	}
+	return unit3dUploadFeedback{
+		ModerationStatus: firstUnit3DUploadFeedbackString(data["moderation_status"]),
+		Warnings:         unit3DUploadFeedbackStrings(data["warnings"]),
+		NameIssues:       unit3DUploadFeedbackStrings(data["name_issues"]),
+	}
+}
+
+func firstUnit3DUploadFeedbackString(raw json.RawMessage) string {
+	values := unit3DUploadFeedbackStrings(raw)
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func unit3DUploadFeedbackStrings(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var single string
+	if json.Unmarshal(raw, &single) == nil {
+		if value := sanitizeUnit3DUploadFeedback(single); value != "" {
+			return []string{value}
+		}
+		return nil
+	}
+	var values []string
+	if json.Unmarshal(raw, &values) != nil {
+		return nil
+	}
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = sanitizeUnit3DUploadFeedback(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func sanitizeUnit3DUploadFeedback(value string) string {
+	value = strings.Join(strings.Fields(logging.SanitizeMessage(value)), " ")
+	const maxFeedbackRunes = 500
+	runes := []rune(value)
+	if len(runes) > maxFeedbackRunes {
+		value = string(runes[:maxFeedbackRunes]) + "..."
+	}
+	return value
+}
+
+func formatUnit3DUploadFeedback(message string, feedback unit3dUploadFeedback) []string {
+	result := make([]string, 0, 2+len(feedback.Warnings)+len(feedback.NameIssues))
+	if message = sanitizeUnit3DUploadFeedback(message); message != "" {
+		result = append(result, message)
+	}
+	if status := sanitizeUnit3DUploadFeedback(feedback.ModerationStatus); status != "" {
+		result = append(result, "Moderation status: "+status)
+	}
+	for _, warning := range feedback.Warnings {
+		result = append(result, "Warning: "+warning)
+	}
+	for _, issue := range feedback.NameIssues {
+		result = append(result, "Name issue: "+issue)
+	}
+	return result
 }
 
 // submitUnit3DUpload sends an already serialized multipart payload and maps a
@@ -47,7 +132,12 @@ func submitUnit3DUpload(
 	meta api.UploadSubject,
 	dbPath string,
 	logger api.Logger,
+	authPolicies ...trackers.APIKeyTransportPolicy,
 ) (api.UploadSummary, error) {
+	authPolicy := trackers.APIKeyTransportPolicy{}
+	if len(authPolicies) > 0 {
+		authPolicy = authPolicies[0]
+	}
 	logger.Infof("trackers: starting upload to %s for release: %s", trackerName, releaseName)
 	logger.Debugf("trackers: %s upload URL: %s", trackerName, uploadURL)
 
@@ -59,7 +149,7 @@ func submitUnit3DUpload(
 		logger.Errorf("trackers: %s failed to create HTTP request: %v", trackerName, err)
 		return api.UploadSummary{}, fmt.Errorf("trackers: %s build upload request: %w", trackerName, err)
 	}
-	trackerdata.SetUnit3DAPIHeaders(httpReq, apiKey)
+	trackerdata.SetUnit3DAPIAuthentication(httpReq, apiKey, authPolicy)
 	httpReq.Header.Set("Content-Type", contentType)
 
 	logger.Debugf("trackers: %s sending upload request...", trackerName)
@@ -110,7 +200,18 @@ func submitUnit3DUpload(
 		return api.UploadSummary{}, err
 	}
 
-	artifact, artifactErr := parseUnit3DUploadArtifact(baseURL, result.Data)
+	feedback := parseUnit3DUploadFeedback(result.Data)
+	submissionFeedback := formatUnit3DUploadFeedback(result.Message, feedback)
+	for _, message := range submissionFeedback {
+		if strings.HasPrefix(message, "Warning: ") || strings.HasPrefix(message, "Name issue: ") {
+			logger.Warnf("trackers: upload feedback tracker=%s detail=%s", trackerName, message)
+			continue
+		}
+		logger.Infof("trackers: upload feedback tracker=%s detail=%s", trackerName, message)
+	}
+
+	artifactData := unit3DUploadArtifactData(result.Data)
+	artifact, artifactErr := parseUnit3DUploadArtifact(baseURL, artifactData)
 	artifact.Tracker = trackerName
 	if artifact.TorrentID != "" {
 		logger.Infof("trackers: %s upload succeeded - torrent ID: %s", trackerName, artifact.TorrentID)
@@ -119,8 +220,9 @@ func submitUnit3DUpload(
 	}
 
 	summary := api.UploadSummary{
-		Uploaded:         1,
-		UploadedTorrents: []api.UploadedTorrent{artifact},
+		Uploaded:           1,
+		UploadedTorrents:   []api.UploadedTorrent{artifact},
+		SubmissionFeedback: submissionFeedback,
 	}
 	if artifactErr != nil || artifact.DownloadURL == "" {
 		trackers.LogRegisteredTorrentUnavailable(logger, trackerName)
@@ -136,7 +238,7 @@ func submitUnit3DUpload(
 		trackers.LogRegisteredTorrentUnavailable(logger, trackerName)
 		return summary, nil
 	}
-	trackerdata.SetUnit3DAPIHeaders(downloadRequest, apiKey)
+	trackerdata.SetUnit3DAPIAuthentication(downloadRequest, apiKey, authPolicy)
 	downloadClient := unit3DRegisteredTorrentClient(client, baseURL)
 	if err := trackers.DownloadRegisteredTorrent(reqCtx, downloadClient, downloadRequest, artifactPath); err != nil {
 		trackers.LogRegisteredTorrentUnavailable(logger, trackerName)
@@ -176,7 +278,8 @@ func prepareUnit3DUpload(
 	}
 	torrentPath := preparedFilePath(preview.Files, "torrent")
 	nfoPath := preparedFilePath(preview.Files, "nfo")
-	payload, contentType, err := buildMultipartPayload(preview.Payload, torrentPath, nfoPath, logger)
+	profile := firstSiteProfile(profiles)
+	payload, contentType, err := buildMultipartPayload(preview.Payload, torrentPath, nfoPath, preview.ReleaseName, logger, profile)
 	if err != nil {
 		return trackers.PreparedOperation{}, err
 	}
@@ -184,6 +287,10 @@ func prepareUnit3DUpload(
 	trackerName := preview.Tracker
 	releaseName := preview.ReleaseName
 	apiKey := strings.TrimSpace(req.TrackerConfig.APIKey)
+	authPolicy := trackers.APIKeyTransportPolicy{}
+	if profile.UploadAPIKeyTransport != nil {
+		authPolicy = *profile.UploadAPIKeyTransport
+	}
 	return trackers.NewPreparedOperation(preview, func(submitCtx context.Context) (api.UploadSummary, error) {
 		return submitUnit3DUpload(
 			submitCtx,
@@ -197,6 +304,7 @@ func prepareUnit3DUpload(
 			req.Meta,
 			req.Runtime.DBPath,
 			logger,
+			authPolicy,
 		)
 	}, nil), nil
 }
@@ -243,6 +351,47 @@ func parseUnit3DUploadArtifact(baseURL, rawData string) (api.UploadedTorrent, er
 	}
 
 	return artifact, nil
+}
+
+func unit3DUploadArtifactData(raw json.RawMessage) string {
+	return unit3DUploadArtifactValue(raw, 0)
+}
+
+func unit3DUploadArtifactValue(raw json.RawMessage, depth int) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return strings.TrimSpace(text)
+	}
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err == nil {
+		return strings.TrimSpace(number.String())
+	}
+	if depth >= 4 {
+		return ""
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return ""
+	}
+	for _, key := range []string{"download_link", "download_url"} {
+		if value := unit3DUploadArtifactValue(object[key], depth+1); value != "" {
+			return value
+		}
+	}
+	for _, key := range []string{"torrent", "data", "attributes"} {
+		if value := unit3DUploadArtifactValue(object[key], depth+1); value != "" {
+			return value
+		}
+	}
+	for _, key := range []string{"torrent_id", "id"} {
+		if value := unit3DUploadArtifactValue(object[key], depth+1); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func resolveUnit3DRegisteredTorrentURL(baseURL string, rawURL string) (string, error) {
@@ -447,12 +596,16 @@ func buildUploadDryRunUnit3D(
 	if req.TrackerConfig.Exclusive {
 		data["exclusive"] = "1"
 	}
+	data = filterUnit3DPayloadFields(data, profile.PayloadFields)
 
 	torrentPath, err := trackers.PreparedUploadTorrentPath(req.Meta)
 	if err != nil {
 		return api.TrackerDryRunEntry{}, fmt.Errorf("trackers: unit3d prepared upload torrent: %w", err)
 	}
-	nfoPath := resolveNFOPath(req.Meta, req.Runtime.DBPath)
+	nfoPath := ""
+	if !profile.OmitNFO {
+		nfoPath = resolveNFOPath(req.Meta, req.Runtime.DBPath)
+	}
 
 	files := []api.TrackerDryRunFile{{
 		Field:   "torrent",
@@ -490,20 +643,47 @@ func buildUploadDryRunUnit3D(
 	}, nil
 }
 
-func buildMultipartPayload(data map[string]string, torrentPath string, nfoPath string, logger api.Logger) (string, string, error) {
+func buildMultipartPayload(
+	data map[string]string,
+	torrentPath string,
+	nfoPath string,
+	releaseName string,
+	logger api.Logger,
+	profiles ...SiteProfile,
+) (string, string, error) {
 	var builder strings.Builder
 	writer := multipart.NewWriter(&builder)
+	profile := firstSiteProfile(profiles)
+	textFiles := unit3DMultipartTextFiles(data, profile.MultipartFiles)
 
 	logger.Tracef("trackers: adding %d form fields to payload", len(data))
 	for key, value := range data {
+		if _, attached := textFiles[key]; attached {
+			continue
+		}
 		if err := writer.WriteField(key, value); err != nil {
 			_ = writer.Close()
 			return "", "", fmt.Errorf("trackers: UNIT3D write multipart field %q: %w", key, err)
 		}
 	}
+	for field, file := range textFiles {
+		part, err := writer.CreateFormFile(field, file.filename)
+		if err != nil {
+			_ = writer.Close()
+			return "", "", fmt.Errorf("trackers: UNIT3D create multipart text file %q: %w", field, err)
+		}
+		if _, err := io.WriteString(part, file.content); err != nil {
+			_ = writer.Close()
+			return "", "", fmt.Errorf("trackers: UNIT3D write multipart text file %q: %w", field, err)
+		}
+	}
 
-	logger.Debugf("trackers: attaching torrent file: %s", filepath.Base(torrentPath))
-	if err := addFile(writer, "torrent", torrentPath); err != nil {
+	torrentFilename := filepath.Base(torrentPath)
+	if profile.MultipartFiles.TorrentFromName {
+		torrentFilename = unit3DTorrentUploadFilename(releaseName, torrentFilename)
+	}
+	logger.Debugf("trackers: attaching torrent file: %s", torrentFilename)
+	if err := addFileAs(writer, "torrent", torrentPath, torrentFilename); err != nil {
 		_ = writer.Close()
 		return "", "", err
 	}
@@ -525,14 +705,65 @@ func buildMultipartPayload(data map[string]string, torrentPath string, nfoPath s
 	return builder.String(), writer.FormDataContentType(), nil
 }
 
+func filterUnit3DPayloadFields(data map[string]string, allowedFields []string) map[string]string {
+	if len(allowedFields) == 0 {
+		return data
+	}
+	filtered := make(map[string]string, len(allowedFields))
+	for _, field := range allowedFields {
+		field = strings.TrimSpace(field)
+		if value, ok := data[field]; ok && field != "" {
+			filtered[field] = value
+		}
+	}
+	return filtered
+}
+
+type unit3DMultipartTextFile struct {
+	filename string
+	content  string
+}
+
+func unit3DMultipartTextFiles(data map[string]string, profile MultipartFileProfile) map[string]unit3DMultipartTextFile {
+	files := make(map[string]unit3DMultipartTextFile, 3)
+	for _, spec := range []struct {
+		field    string
+		filename string
+		required bool
+	}{
+		{
+			field:    "description",
+			filename: profile.DescriptionFilename,
+			required: true,
+		},
+		{field: "mediainfo", filename: profile.MediaInfoFilename},
+		{field: "bdinfo", filename: profile.BDInfoFilename},
+	} {
+		filename := strings.TrimSpace(spec.filename)
+		if filename == "" {
+			continue
+		}
+		content := data[spec.field]
+		if !spec.required && strings.TrimSpace(content) == "" {
+			continue
+		}
+		files[spec.field] = unit3DMultipartTextFile{filename: filename, content: content}
+	}
+	return files
+}
+
 func addFile(writer *multipart.Writer, field, path string) error {
+	return addFileAs(writer, field, path, filepath.Base(path))
+}
+
+func addFileAs(writer *multipart.Writer, field, path, filename string) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("trackers: UNIT3D open multipart file: %w", err)
 	}
 	defer file.Close()
 
-	part, err := writer.CreateFormFile(field, filepath.Base(path))
+	part, err := writer.CreateFormFile(field, filename)
 	if err != nil {
 		return fmt.Errorf("trackers: UNIT3D create multipart file %q: %w", field, err)
 	}
@@ -541,6 +772,16 @@ func addFile(writer *multipart.Writer, field, path string) error {
 		return fmt.Errorf("trackers: UNIT3D copy multipart file: %w", err)
 	}
 	return nil
+}
+
+func unit3DTorrentUploadFilename(releaseName, fallback string) string {
+	name := strings.TrimSpace(releaseName)
+	name = strings.NewReplacer("/", "-", "\\", "-").Replace(name)
+	name = filepath.Base(name)
+	if name == "" || name == "." {
+		return fallback
+	}
+	return name + ".torrent"
 }
 
 func buildUnit3DData(req trackers.PreparationInput, name, description, mediainfo, bdinfo string, profiles ...SiteProfile) (map[string]string, error) {

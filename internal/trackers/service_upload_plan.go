@@ -953,6 +953,7 @@ func summarizeTrackerPlanSlots(slots []trackerPlanSlot) api.UploadSummary {
 	for _, slot := range slots {
 		summary.Uploaded += slot.summary.Uploaded
 		summary.UploadedTorrents = append(summary.UploadedTorrents, slot.summary.UploadedTorrents...)
+		summary.SubmissionFeedback = append(summary.SubmissionFeedback, slot.summary.SubmissionFeedback...)
 	}
 	return summary
 }

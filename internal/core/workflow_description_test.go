@@ -102,6 +102,7 @@ func TestWorkflowDescriptionBuilderBindsProjectionMediaInputsAndImageFeedback(t 
 		Revision:                5,
 		CaptureFingerprint:      workflowTestFingerprint(t, "media-capture"),
 		RequirementsFingerprint: workflowTestFingerprint(t, "media-requirements"),
+		FailedHosts:             []string{"imgbox"},
 		Artifacts: []api.MediaArtifact{
 			{
 				ID:       "screen-1",
@@ -140,6 +141,7 @@ func TestWorkflowDescriptionBuilderBindsProjectionMediaInputsAndImageFeedback(t 
 		QuestionnaireAnswers: map[api.TrackerID]map[string]string{
 			"ALPHA": {"edition": "theatrical"},
 		},
+		ImageHost:       api.ImageHostOverrides{FailedHosts: []string{"pixhost", "IMGBOX"}},
 		TemplateVersion: "v1",
 	}
 	privateMedia := workflowMediaPrivateArtifacts{
@@ -194,6 +196,10 @@ func TestWorkflowDescriptionBuilderBindsProjectionMediaInputsAndImageFeedback(t 
 	if service.subject.ImageHost.SkipUpload == nil || !*service.subject.ImageHost.SkipUpload {
 		t.Fatalf("description subject allowed hidden image upload: %#v", service.subject.ImageHost)
 	}
+	if len(service.subject.ImageHost.FailedHosts) != 2 || service.subject.ImageHost.FailedHosts[0] != "imgbox" ||
+		service.subject.ImageHost.FailedHosts[1] != "pixhost" {
+		t.Fatalf("description subject failed image hosts = %v", service.subject.ImageHost.FailedHosts)
+	}
 	description := snapshot.Descriptions[0]
 	if len(description.TrackerIDs) != 2 || description.TrackerIDs[0] != "ALPHA" || description.TrackerIDs[1] != "BETA" ||
 		description.ContentFingerprint == "" {
@@ -231,62 +237,62 @@ func TestResolveWorkflowExactMediaKeepsChannelsAndHostedVariantsSeparate(t *test
 
 	media := api.MediaArtifactSet{Artifacts: []api.MediaArtifact{
 		{
-ID: "screen-1",
- Kind: api.MediaArtifactScreenshot,
- Purpose: api.ScreenshotPurposeFinal,
- Selected: true,
- Order: 2,
-},
-		{
-ID: "menu-1",
- Kind: api.MediaArtifactDVDMenu,
- Purpose: api.ScreenshotPurposeMenu,
- Selected: true,
- Order: 1,
-},
-		{
-ID: "screen-2",
- Kind: api.MediaArtifactScreenshot,
- Purpose: api.ScreenshotPurposeFinal,
- Selected: true,
- Order: 0,
-},
-		{
-ID: "menu-2",
- Kind: api.MediaArtifactDVDMenu,
- Purpose: api.ScreenshotPurposeMenu,
- Selected: true,
- Order: 0,
-},
-		{
-ID: "screen-3",
- Kind: api.MediaArtifactScreenshot,
- Purpose: api.ScreenshotPurposeFinal,
- Selected: true,
- Order: 3,
-},
-		{
-ID: "screen-4",
- Kind: api.MediaArtifactScreenshot,
- Purpose: api.ScreenshotPurposeFinal,
- Selected: true,
- Order: 1,
-},
-		{
-			ID: "hosted-screen",
- Kind: api.MediaArtifactHostedImage,
- Purpose: api.ScreenshotPurposeFinal,
+			ID:       "screen-1",
+			Kind:     api.MediaArtifactScreenshot,
+			Purpose:  api.ScreenshotPurposeFinal,
 			Selected: true,
- Order: 6,
- Source: "screen-2",
+			Order:    2,
 		},
 		{
-			ID: "hosted-menu",
- Kind: api.MediaArtifactHostedImage,
- Purpose: api.ScreenshotPurposeMenu,
+			ID:       "menu-1",
+			Kind:     api.MediaArtifactDVDMenu,
+			Purpose:  api.ScreenshotPurposeMenu,
 			Selected: true,
- Order: 7,
- Source: "menu-2",
+			Order:    1,
+		},
+		{
+			ID:       "screen-2",
+			Kind:     api.MediaArtifactScreenshot,
+			Purpose:  api.ScreenshotPurposeFinal,
+			Selected: true,
+			Order:    0,
+		},
+		{
+			ID:       "menu-2",
+			Kind:     api.MediaArtifactDVDMenu,
+			Purpose:  api.ScreenshotPurposeMenu,
+			Selected: true,
+			Order:    0,
+		},
+		{
+			ID:       "screen-3",
+			Kind:     api.MediaArtifactScreenshot,
+			Purpose:  api.ScreenshotPurposeFinal,
+			Selected: true,
+			Order:    3,
+		},
+		{
+			ID:       "screen-4",
+			Kind:     api.MediaArtifactScreenshot,
+			Purpose:  api.ScreenshotPurposeFinal,
+			Selected: true,
+			Order:    1,
+		},
+		{
+			ID:       "hosted-screen",
+			Kind:     api.MediaArtifactHostedImage,
+			Purpose:  api.ScreenshotPurposeFinal,
+			Selected: true,
+			Order:    6,
+			Source:   "screen-2",
+		},
+		{
+			ID:       "hosted-menu",
+			Kind:     api.MediaArtifactHostedImage,
+			Purpose:  api.ScreenshotPurposeMenu,
+			Selected: true,
+			Order:    7,
+			Source:   "menu-2",
 		},
 	}}
 	private := workflowMediaPrivateArtifacts{

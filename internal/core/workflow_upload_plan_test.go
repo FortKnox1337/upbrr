@@ -1044,10 +1044,13 @@ func TestWorkflowUploadExecutionDoesNotRepeatSuccessfulDryRunInjection(t *testin
 	execution := &workflowUploadExecution{
 		plan: &workflowRetainedUploadPlanFake{results: []trackers.RetainedTrackerResult{{
 			Tracker: "ALPHA",
-			Summary: api.UploadSummary{UploadedTorrents: []api.UploadedTorrent{{
-				Tracker:     "ALPHA",
-				TorrentPath: filepath.Join(t.TempDir(), "Example.Release.2026.ALPHA-GRP.torrent"),
-			}}},
+			Summary: api.UploadSummary{
+				UploadedTorrents: []api.UploadedTorrent{{
+					Tracker:     "ALPHA",
+					TorrentPath: filepath.Join(t.TempDir(), "Example.Release.2026.ALPHA-GRP.torrent"),
+				}},
+				SubmissionFeedback: []string{"Moderation status: approved"},
+			},
 		}}},
 		clients:        clientService,
 		dryRunInjected: map[api.TrackerID]struct{}{"ALPHA": {}},
@@ -1058,6 +1061,9 @@ func TestWorkflowUploadExecutionDoesNotRepeatSuccessfulDryRunInjection(t *testin
 	}
 	if len(results) != 1 || !results[0].ClientInjected || len(clientService.injections) != 0 {
 		t.Fatalf("upload execution results=%#v injections=%#v", results, clientService.injections)
+	}
+	if !slices.Equal(results[0].SubmissionFeedback, []string{"Moderation status: approved"}) {
+		t.Fatalf("submission feedback = %#v", results[0].SubmissionFeedback)
 	}
 }
 
@@ -1143,6 +1149,7 @@ func TestWorkflowUploadExecutionInjectsExactRegisteredTrackerTorrent(t *testing.
 					Tracker:     "ALPHA",
 					TorrentPath: remotePath,
 				}},
+				SubmissionFeedback: []string{"Moderation status: approved"},
 			},
 		}}},
 		clients: clientService,
@@ -1154,6 +1161,9 @@ func TestWorkflowUploadExecutionInjectsExactRegisteredTrackerTorrent(t *testing.
 	if len(results) != 1 || !results[0].ClientInjected || len(clientService.injections) != 1 ||
 		clientService.injections[0].Path != remotePath || clientService.injections[0].Path == exactPath {
 		t.Fatalf("registered tracker injection results=%#v injections=%#v", results, clientService.injections)
+	}
+	if !slices.Equal(results[0].SubmissionFeedback, []string{"Moderation status: approved"}) {
+		t.Fatalf("registered tracker submission feedback = %#v", results[0].SubmissionFeedback)
 	}
 	authority := execution.RegisteredArtifactAuthority()
 	if authority.Torrents["ALPHA"].Path != remotePath {

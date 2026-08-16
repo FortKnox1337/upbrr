@@ -340,6 +340,33 @@ func TestEvaluateRulesUnit3DEnforcesMediaInfoSettings(t *testing.T) {
 	}
 }
 
+func TestHUNORulesRequireHEVCAndAudioLanguages(t *testing.T) {
+	t.Parallel()
+
+	encode := api.RuleSubject{
+		Type:           "ENCODE",
+		Source:         "BLURAY",
+		VideoCodec:     "AVC",
+		AudioLanguages: []string{"English"},
+		Assessments:    encodeAssessments(api.EncodeSettingsStatusPresent),
+	}
+	encodeFailures := evaluateNonMetadataRulesForTest(context.Background(), "HUNO", encode)
+	if failure, found := findRuleFailure(encodeFailures, "require_hevc"); !found || failure.Disposition != api.RuleDispositionStrict {
+		t.Fatalf("HUNO HEVC rule = %#v; failures=%#v", failure, encodeFailures)
+	}
+
+	webDL := api.RuleSubject{
+		Type:        "WEBDL",
+		Source:      "WEB-DL",
+		VideoCodec:  "HEVC",
+		Assessments: encodeAssessments(api.EncodeSettingsStatusNotApplicable),
+	}
+	languageFailures := evaluateNonMetadataRulesForTest(context.Background(), "HUNO", webDL)
+	if failure, found := findRuleFailure(languageFailures, "require_audio_languages"); !found || failure.Disposition != api.RuleDispositionWaivable {
+		t.Fatalf("HUNO audio-language rule = %#v; failures=%#v", failure, languageFailures)
+	}
+}
+
 func TestEvaluateRulesUnit3DWithoutRuleSetEnforcesMediaInfoSettings(t *testing.T) {
 	// ACM is a known UNIT3D tracker with no tracker-specific RuleSet. The early
 	// "not found" return must not skip the MediaInfo-settings enforcement.

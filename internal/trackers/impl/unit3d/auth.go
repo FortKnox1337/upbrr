@@ -16,11 +16,15 @@ func (d *Definition) AuthCapability() api.TrackerAuthCapability {
 
 // AuthPolicy returns the family-owned effective API-key requirements.
 func (d *Definition) AuthPolicy() *trackers.AuthPolicy {
+	requirements := []trackers.AuthRequirement{trackers.AuthRequirementAPIKey}
+	if d.profile.UploadArtifact != nil && d.profile.UploadArtifact.RequireAnnounce {
+		requirements = append(requirements, trackers.AuthRequirementAnnounceURL)
+	}
 	return &trackers.AuthPolicy{
 		ResolveRequirements: authcontract.StaticRequirements(authcontract.Requirements(
 			"api_key",
 			false,
-			[]trackers.AuthRequirement{trackers.AuthRequirementAPIKey},
+			requirements,
 		)),
 	}
 }

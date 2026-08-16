@@ -1049,6 +1049,7 @@ func (e *workflowUploadExecution) Execute(
 			})
 			continue
 		}
+		submissionFeedback := append([]string(nil), result.Summary.SubmissionFeedback...)
 		outcome := api.UploadTrackerResult{
 			TrackerID:        trackerID,
 			SubmissionStatus: api.StageStatusCompleted,
@@ -1092,6 +1093,7 @@ func (e *workflowUploadExecution) Execute(
 			injected.RemoteURL = sanitizeWorkflowRemoteURL(uploaded.TorrentURL)
 			outcome = injected
 		}
+		outcome.SubmissionFeedback = submissionFeedback
 		outcome.Status = outcome.DerivedStatus()
 		public = append(public, outcome)
 	}

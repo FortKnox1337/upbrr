@@ -300,6 +300,20 @@ type AuthPolicy struct {
 	PasskeyRequiresCookie bool
 }
 
+// APIKeyTransportPolicy declares how a tracker API credential is attached to
+// HTTP requests. Bearer authentication remains the default; QueryParameter is
+// reserved for APIs that require the credential in the query string instead.
+type APIKeyTransportPolicy struct {
+	QueryParameter string
+	DisableBearer  bool
+}
+
+// APIKeyTransportPolicyProvider declares tracker-owned API request transport.
+type APIKeyTransportPolicyProvider interface {
+	// APIKeyTransportPolicy returns the API credential transport override.
+	APIKeyTransportPolicy() *APIKeyTransportPolicy
+}
+
 // AuthPolicyProvider declares tracker-owned auth coordinator policy.
 type AuthPolicyProvider interface {
 	// AuthPolicy returns tracker-specific auth readiness semantics.
@@ -803,6 +817,8 @@ type Descriptor struct {
 	BaseURL string
 	// Definition is the required preparation adapter.
 	Definition Definition
+	// APIKeyTransport contains an optional API credential transport override.
+	APIKeyTransport *APIKeyTransportPolicy
 	// ReleaseNamePolicy owns the tracker-local upload and duplicate-search names.
 	ReleaseNamePolicy ReleaseNamePolicyBinding
 	// UploadContentMode identifies the shared content object consumed before preparation.

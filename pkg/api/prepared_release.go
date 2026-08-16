@@ -256,6 +256,7 @@ type ReleaseAssessments struct {
 	MediaInfoUniqueID       UniqueIDStatus
 	MediaInfoEncodeSettings EncodeSettingsStatus
 	VideoBitrate            VideoBitrateAssessment
+	VideoCRF                VideoCRFAssessment
 	Naming                  NamingAssessment
 }
 
@@ -275,6 +276,24 @@ const (
 type VideoBitrateAssessment struct {
 	Status        VideoBitrateStatus
 	BitsPerSecond int64
+}
+
+// VideoCRFStatus records whether a usable constant-rate-factor value was
+// derived from prepared MediaInfo encoding settings.
+type VideoCRFStatus string
+
+const (
+	VideoCRFStatusUnknown     VideoCRFStatus = "unknown"
+	VideoCRFStatusPresent     VideoCRFStatus = "present"
+	VideoCRFStatusUnavailable VideoCRFStatus = "unavailable"
+	VideoCRFStatusInvalid     VideoCRFStatus = "invalid"
+)
+
+// VideoCRFAssessment contains the prepared video CRF and its evidence status.
+// Value is populated only when Status is Present.
+type VideoCRFAssessment struct {
+	Status VideoCRFStatus
+	Value  float64
 }
 
 // UniqueIDRequirementSatisfied reports whether the concrete assessment permits

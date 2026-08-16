@@ -955,6 +955,7 @@ export type ReleaseAssessments = Readonly<{
   MediaInfoUniqueID: UniqueIDStatus;
   Naming: NamingAssessment;
   VideoBitrate: VideoBitrateAssessment;
+  VideoCRF: VideoCRFAssessment;
 }>;
 
 export type ReleaseFactInstructionSnapshot = Readonly<{
@@ -2282,6 +2283,7 @@ export type UploadTrackerResult = Readonly<{
   remoteId?: string;
   remoteUrl?: string;
   status: StageStatus;
+  submissionFeedback?: readonly string[];
   submissionStatus?: StageStatus;
   trackerId: TrackerID;
 }>;
@@ -2292,6 +2294,13 @@ export type VideoBitrateAssessment = Readonly<{
 }>;
 
 export type VideoBitrateStatus = string;
+
+export type VideoCRFAssessment = Readonly<{
+  Status: VideoCRFStatus;
+  Value: number;
+}>;
+
+export type VideoCRFStatus = string;
 
 export type WorkflowAuthority = Readonly<{
   expectedRevision: WorkflowRevision;

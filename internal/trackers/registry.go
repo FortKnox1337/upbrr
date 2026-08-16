@@ -111,6 +111,9 @@ func (r *Registry) Register(def Definition) error {
 		}
 		descriptor.DataFactory, _ = def.(DataLookupFactory)
 		descriptor.ClaimFactory, _ = def.(ClaimCheckerFactory)
+		if provider, ok := def.(APIKeyTransportPolicyProvider); ok {
+			descriptor.APIKeyTransport = provider.APIKeyTransportPolicy()
+		}
 		if provider, ok := def.(ClaimPolicyProvider); ok {
 			descriptor.ClaimPolicy = provider.ClaimPolicy()
 		}
@@ -313,6 +316,15 @@ func (r *Registry) LookupDataPolicy(tracker string) (DataLookupPolicy, bool) {
 		return DataLookupPolicy{}, false
 	}
 	return *descriptor.DataPolicy, true
+}
+
+// LookupAPIKeyTransportPolicy returns the tracker-owned API credential transport override.
+func (r *Registry) LookupAPIKeyTransportPolicy(tracker string) (APIKeyTransportPolicy, bool) {
+	descriptor, ok := r.LookupDescriptor(tracker)
+	if !ok || descriptor.APIKeyTransport == nil {
+		return APIKeyTransportPolicy{}, false
+	}
+	return *descriptor.APIKeyTransport, true
 }
 
 // LookupFamily returns the registered tracker protocol family.

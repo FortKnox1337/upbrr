@@ -75,8 +75,29 @@ func NewWithProfile(profile Profile) *Definition {
 	profile.BaseURL = strings.TrimSpace(profile.BaseURL)
 	profile.DescriptionGroup = strings.ToLower(strings.TrimSpace(profile.DescriptionGroup))
 	profile.BannedGroups = append([]string(nil), profile.BannedGroups...)
+	profile.Site.PayloadFields = slices.Clone(profile.Site.PayloadFields)
 	profile.MetadataPolicy = cloneMetadataPolicy(profile.MetadataPolicy)
+	if profile.Site.APIKeyTransport != nil {
+		policy := *profile.Site.APIKeyTransport
+		policy.QueryParameter = strings.TrimSpace(policy.QueryParameter)
+		profile.Site.APIKeyTransport = &policy
+	}
+	if profile.Site.UploadAPIKeyTransport != nil {
+		policy := *profile.Site.UploadAPIKeyTransport
+		policy.QueryParameter = strings.TrimSpace(policy.QueryParameter)
+		profile.Site.UploadAPIKeyTransport = &policy
+	}
 	return &Definition{profile: profile}
+}
+
+// APIKeyTransportPolicy returns an independent copy of the site's data and
+// duplicate-search API credential transport.
+func (d *Definition) APIKeyTransportPolicy() *trackers.APIKeyTransportPolicy {
+	if d.profile.Site.APIKeyTransport == nil {
+		return nil
+	}
+	policy := *d.profile.Site.APIKeyTransport
+	return &policy
 }
 
 // DescriptionGroup returns the site-specific description override group.

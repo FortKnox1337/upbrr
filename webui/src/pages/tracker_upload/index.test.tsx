@@ -269,6 +269,7 @@ describe("TrackerUploadPage", () => {
           clientInjectionStatus: "failed",
           clientFailureCode: "client_injection",
           clientInjectionMessage: "Exact-torrent client injection failed.",
+          submissionFeedback: ["Moderation status: approved"],
           failures: [
             {
               failure: {
@@ -289,7 +290,7 @@ describe("TrackerUploadPage", () => {
     expect(retryClientInjection).toHaveBeenCalledOnce();
     expect(
       screen.getByText(
-        "Submission: completed · Client injection: failed · Exact-torrent client injection failed.",
+        "Submission: completed · Client injection: failed · Exact-torrent client injection failed. · Moderation status: approved",
       ),
     ).toBeInTheDocument();
     expect(container.textContent?.match(/Exact-torrent client injection failed\./g)).toHaveLength(

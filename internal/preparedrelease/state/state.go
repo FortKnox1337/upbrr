@@ -47,6 +47,7 @@ func (s State) ReleaseAssessments() api.ReleaseAssessments {
 		MediaInfoUniqueID:       uniqueID,
 		MediaInfoEncodeSettings: encodeSettings,
 		VideoBitrate:            s.VideoBitrate,
+		VideoCRF:                s.VideoCRF,
 	}
 }
 
@@ -186,6 +187,7 @@ type State struct {
 	MediaInfoUniqueIDPresent       bool
 	MediaInfoEncodeSettingsPresent bool
 	VideoBitrate                   api.VideoBitrateAssessment
+	VideoCRF                       api.VideoCRFAssessment
 	StreamOptimized                int
 	Service                        string
 	ServiceLongName                string

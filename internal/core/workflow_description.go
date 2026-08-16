@@ -137,6 +137,15 @@ func (b workflowDescriptionBuilder) Build(
 	subject.ExactMedia = exactMedia
 	skipUpload := true
 	subject.ImageHostOverrides.SkipUpload = &skipUpload
+	if len(media.FailedHosts) > 0 {
+		failedHosts := make(map[string]struct{}, len(subject.ImageHostOverrides.FailedHosts)+len(media.FailedHosts))
+		for _, host := range append(subject.ImageHostOverrides.FailedHosts, media.FailedHosts...) {
+			if normalized := strings.ToLower(strings.TrimSpace(host)); normalized != "" {
+				failedHosts[normalized] = struct{}{}
+			}
+		}
+		subject.ImageHostOverrides.FailedHosts = sortedNonEmptyKeys(failedHosts)
+	}
 	descriptionTargets := workflowDescriptionTargets(projections.Projections)
 	trackerNames := workflowProjectionTrackerNames(descriptionTargets)
 	if len(descriptionTargets) == 0 {

@@ -3691,13 +3691,17 @@
           },
           "VideoBitrate": {
             "$ref": "#/components/schemas/VideoBitrateAssessment"
+          },
+          "VideoCRF": {
+            "$ref": "#/components/schemas/VideoCRFAssessment"
           }
         },
         "required": [
           "MediaInfoEncodeSettings",
           "MediaInfoUniqueID",
           "Naming",
-          "VideoBitrate"
+          "VideoBitrate",
+          "VideoCRF"
         ]
       },
       "ReleaseFactInstructionSnapshot": {
@@ -9404,6 +9408,12 @@
           "status": {
             "$ref": "#/components/schemas/StageStatus"
           },
+          "submissionFeedback": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "submissionStatus": {
             "$ref": "#/components/schemas/StageStatus"
           },
@@ -9434,6 +9444,24 @@
         ]
       },
       "VideoBitrateStatus": {
+        "type": "string"
+      },
+      "VideoCRFAssessment": {
+        "type": "object",
+        "properties": {
+          "Status": {
+            "$ref": "#/components/schemas/VideoCRFStatus"
+          },
+          "Value": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "Status",
+          "Value"
+        ]
+      },
+      "VideoCRFStatus": {
         "type": "string"
       },
       "WorkflowAuthority": {

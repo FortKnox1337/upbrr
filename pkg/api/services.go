@@ -2094,8 +2094,9 @@ type TagOverride struct {
 }
 
 type UploadSummary struct {
-	Uploaded         int
-	UploadedTorrents []UploadedTorrent
+	Uploaded           int
+	UploadedTorrents   []UploadedTorrent
+	SubmissionFeedback []string
 }
 
 type UploadedTorrent struct {
