@@ -113,9 +113,10 @@ const torrentClientLinkingOptions = [
   { value: "reflink", label: "Reflink" },
   { value: "symlink", label: "Symlink" },
 ];
-const imageHostOptionLabels = new Map(
-  imageHostOptions.map((option) => [option.value, option.label]),
-);
+const imageHostOptionLabels = new Map<string, string>([
+  ...imageHostOptions.map((option) => [option.value, option.label] as const),
+  ["samaritano", "Samaritano"],
+]);
 const normalizeImageHostValue = (value: string) => value.trim().toLowerCase();
 const imageHostOptionFor = (host: string) => {
   const value = normalizeImageHostValue(host);
@@ -138,6 +139,7 @@ const imageHostKeyMap: Record<string, string[]> = {
 const conditionalImageHostEnabledKeys: Record<string, string> = {
   lostimg: "LostimgEnabled",
   reelflix: "ReelflixEnabled",
+  samaritano: "SamaritanoEnabled",
 };
 
 const stringField = (key: string, meta: Omit<FieldMeta, "key" | "type"> = {}): FieldMeta => ({
@@ -1998,6 +2000,22 @@ export const useSettingsState = (options: UseSettingsStateOptions): UseSettingsS
               (imageCfg.ReelflixAPI as ConfigValue) ?? "",
               ["ImageHosting", "ReelflixAPI"],
               sectionFieldMeta.ImageHosting.ReelflixAPI,
+            )}
+            <div className="settings-switch-row">
+              <span>Samaritano enabled</span>
+              <Switch
+                aria-label="Samaritano enabled"
+                checked={Boolean(imageCfg.SamaritanoEnabled)}
+                onChange={(event) =>
+                  updateConfigValue(["ImageHosting", "SamaritanoEnabled"], event.target.checked)
+                }
+              />
+            </div>
+            {renderField(
+              "SamaritanoAPI",
+              (imageCfg.SamaritanoAPI as ConfigValue) ?? "",
+              ["ImageHosting", "SamaritanoAPI"],
+              sectionFieldMeta.ImageHosting.SamaritanoAPI,
             )}
           </div>
         </div>
