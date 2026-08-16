@@ -19,8 +19,9 @@ func Profile() unit3d.Profile {
 			EnableWithImageHosting: true,
 		},
 		Site: unit3d.SiteProfile{
-			BuildName:        buildName,
-			BuildNameVersion: "v1",
+			BuildName:         buildName,
+			BuildNameVersion:  "v1",
+			ResolveCategoryID: categoryID,
 		},
 	}
 }
