@@ -1817,7 +1817,10 @@ func findEpisodeMatch(episodes []Episode, query EpisodeQuery) (EpisodeMatch, boo
 			}
 		}
 	}
-	if query.Episode != 0 {
+	// A seasonless episode number is treated as an absolute-number fallback.
+	// When a season was explicitly requested, do not silently match an episode
+	// from another season by absolute number.
+	if query.Season == 0 && query.Episode != 0 {
 		for _, ep := range episodes {
 			if ep.AbsoluteNumber == query.Episode {
 				return toMatch(ep), true

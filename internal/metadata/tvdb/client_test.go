@@ -477,6 +477,11 @@ func TestFindEpisodeMatch(t *testing.T) {
 		t.Fatalf("expected exact episode match")
 	}
 
+	match, ok = findEpisodeMatch(episodes, EpisodeQuery{Season: 3, Episode: 2})
+	if ok {
+		t.Fatalf("explicit season query fell back to another season by absolute number: %#v", match)
+	}
+
 	match, ok = findEpisodeMatch(episodes, EpisodeQuery{Season: 1, Episode: 2})
 	if !ok || match.EpisodeNumber != 2 {
 		t.Fatalf("expected episode number 2")
