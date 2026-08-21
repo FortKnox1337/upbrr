@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/autobrr/upbrr/internal/metadata/metautil"
 	preparationstate "github.com/autobrr/upbrr/internal/preparedrelease/state"
 
 	pathutil "github.com/autobrr/upbrr/internal/pathing"
@@ -129,7 +130,9 @@ func buildReleaseName(req api.ReleaseNameRequest, logger api.Logger) api.Release
 		searchYear := strings.TrimSpace(req.SearchYear)
 		if parsedYear, err := strconv.Atoi(searchYear); err == nil && parsedYear > 0 {
 			title = trimTrailingParentheticalYear(title, parsedYear)
-			year = parsedYear
+			if !req.NoYear {
+				year = parsedYear
+			}
 		} else {
 			year = 0
 		}
@@ -515,11 +518,16 @@ func resolveReleaseNameTitle(category string, meta preparationstate.State) (stri
 		tvdb := meta.ProviderMetadata.TVDB
 		englishTitle := strings.TrimSpace(tvdb.NameEnglish)
 		nativeTitle := strings.TrimSpace(tvdb.Name)
+		imdbAKA := ""
+		if matchingIMDBMetadataForNaming(meta) {
+			imdbAKA = meta.ProviderMetadata.IMDB.AKA
+		}
 		if englishTitle != "" {
 			title = englishTitle
-			altTitle = fillProviderAlternateTitle(altTitle, title, nativeTitle)
+			altTitle = fillProviderAlternateTitle(altTitle, title, imdbAKA, nativeTitle)
 		} else {
 			title = nativeTitle
+			altTitle = fillProviderAlternateTitle(altTitle, title, imdbAKA)
 		}
 		if tvdb.Year > 0 && tvdb.YearFromAlias {
 			year = tvdb.Year
@@ -533,7 +541,11 @@ func resolveReleaseNameTitle(category string, meta preparationstate.State) (stri
 	case matchingTMDBMetadataForNaming(meta):
 		tmdb := meta.ProviderMetadata.TMDB
 		title = strings.TrimSpace(tmdb.Title)
-		altTitle = fillProviderAlternateTitle(altTitle, title, tmdb.OriginalTitle)
+		imdbAKA := ""
+		if matchingIMDBMetadataForNaming(meta) {
+			imdbAKA = meta.ProviderMetadata.IMDB.AKA
+		}
+		altTitle = fillProviderAlternateTitle(altTitle, title, tmdb.RetrievedAKA, imdbAKA, tmdb.OriginalTitle)
 		if year == 0 && tmdb.Year > 0 {
 			year = tmdb.Year
 		}
@@ -583,20 +595,21 @@ func namingSourceMatches(scopedPath, currentPath string) bool {
 	return trimmed == "" || strings.EqualFold(trimmed, strings.TrimSpace(currentPath))
 }
 
-// fillProviderAlternateTitle prefers a parsed alternate and otherwise returns
-// one normalized AKA title when the chosen value differs from the primary.
-func fillProviderAlternateTitle(current, primary, candidate string) string {
-	alternate := strings.TrimSpace(current)
-	if alternate == "" {
-		alternate = strings.TrimSpace(candidate)
+// fillProviderAlternateTitle returns the first non-empty alternate that differs
+// from the primary, preferring the parsed value before provider candidates.
+func fillProviderAlternateTitle(current, primary string, candidates ...string) string {
+	for _, candidate := range append([]string{current}, candidates...) {
+		alternate := strings.TrimSpace(candidate)
+		if len(alternate) > len("AKA ") && strings.EqualFold(alternate[:len("AKA ")], "AKA ") {
+			alternate = strings.TrimSpace(alternate[len("AKA "):])
+		}
+		if alternate == "" || strings.EqualFold(strings.TrimSpace(primary), alternate) ||
+			metautil.SimilarityRatio(titleIdentityKey(primary), titleIdentityKey(alternate)) >= 0.7 {
+			continue
+		}
+		return "AKA " + alternate
 	}
-	if len(alternate) > len("AKA ") && strings.EqualFold(alternate[:len("AKA ")], "AKA ") {
-		alternate = strings.TrimSpace(alternate[len("AKA "):])
-	}
-	if alternate == "" || strings.EqualFold(strings.TrimSpace(primary), alternate) {
-		return ""
-	}
-	return "AKA " + alternate
+	return ""
 }
 
 func trimTrailingParentheticalYear(title string, year int) string {
